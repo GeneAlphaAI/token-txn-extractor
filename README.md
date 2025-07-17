@@ -7,7 +7,7 @@ token-txn-extractor is a Node.js backend service designed to extract, process, a
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/GeneAlphaAI/token-txn-extractor
    cd token-txn-extractor
    ```
 
