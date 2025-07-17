@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  token-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5015:5015"
+
