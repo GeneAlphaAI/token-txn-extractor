@@ -20,7 +20,7 @@ app.listen(PORT, () => {
   );
   console.log(
     chalk.hex("#65ff00")(
-      chalk.underline(`GeneAlpha Server Started Successfully`)
+      chalk.underline(`Server Started Successfully`)
     )
   );
 });
