@@ -5,7 +5,7 @@ const { CustomError } = require("../utils/appUtils");
 
 module.exports = function (app) {
   app.get("/", (req, res) => {
-    res.send("Welcome to the Node.js API!");
+    res.send("Welcome to Token Transaction Extractor Service");
   });
   // Routes start
   app.use("/api/token/transactions", transactionRouter);
@@ -16,7 +16,7 @@ module.exports = function (app) {
 
   // Catch 404 and forward to error handler
   app.use(function (req, res, next) {
-    next(new CustomError("No Route found", "Not Found|||404"));
+    next(new CustomError("No Route found", "Not Found 404"));
   });
 
   // Handle errors
