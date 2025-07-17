@@ -1,6 +1,7 @@
-const path = require("path");
+
 const errorMiddleware = require("../middleware/errorMiddleware");
 const { transactionRouter } = require("../routes");
+const { CustomError } = require("../utils/appUtils");
 
 module.exports = function (app) {
   app.get("/", (req, res) => {
@@ -9,10 +10,14 @@ module.exports = function (app) {
   // Routes start
   app.use("/api/token/transactions", transactionRouter);
 
-  // catch 404 and forward to error handler
-  // app.use(function (req, res, next) {
-  //   next(throwNoDataFoundError("The content you requested was not found."));
-  // });
+  app.use("/docs", (req, res, next) =>
+    res.redirect("https://documenter.getpostman.com/view/33425726/2sB34ikfPv")
+  );
+
+  // Catch 404 and forward to error handler
+  app.use(function (req, res, next) {
+    next(new CustomError("No Route found", "Not Found|||404"));
+  });
 
   // Handle errors
   app.use(errorMiddleware);
