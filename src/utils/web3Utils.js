@@ -70,7 +70,6 @@ const {
   Unknown_Router14,
   Unknown_Router15
 } = process.env;
-console.log("Using RPC HTTP:", Unknown_Router14);
 
 // Connection variables with renamed internal vars
 let blockchainHttpProvider = new Web3(new Web3.providers.HttpProvider(RPC_HTTP));
