@@ -1,25 +1,44 @@
 const express = require("express");
 const router = express.Router();
 const asyncMiddleware = require("../middleware/asyncMiddleware");
-const { fetchTokenTransfers } = require("../services/externalAPIs/moralisAPI");
-const { processTransactions } = require("../services/transactionProcesseor");
+const TransactionProcessor = require("../services/transactionProcesseor");
+const logger = require("../utils/logger");
+const processor = new TransactionProcessor();
 
 router.get(
   "/summary",
   asyncMiddleware(async (req, res) => {
     const response = { data: null, message: null, error: null };
-    // try {
-      if (!req.query.address) {
-        response.message = "Token address query parameter is required.";
-        return res.status(400).json(response);
-      }
-      response.data = await processTransactions(req.query.address);
-      response.message = "Token transactions fetched successfully.";
-      res.status(200).json(response);
-    // } catch (error) {
-    //   response.error = error.message || "An error occurred";
-    //   res.status(500).json(response);
-    // }
+
+    if (!req.query.address) {
+      response.message = "Token address query parameter is required.";
+      return res.status(400).json(response);
+    }
+    response.data = await processor.generateTokenHourlyData(req.query.address);
+    response.message = "Token transactions data fetched successfully.";
+    res.status(200).json(response);
+  })
+);
+
+router.get(
+  "/historical/summary",
+  asyncMiddleware(async (req, res) => {
+    const { address, fromDate, toDate } = req.query;
+    const response = { data: null, message: null, error: null };
+
+    if (!address || !fromDate || !toDate) {
+      logger.warn(`Required parameters missing`);
+      response.message = "Required parameters missing.";
+      return res.status(400).json(response);
+    }
+    response.data = await processor.generateTokenHistoricalData(
+      address,
+      fromDate,
+      toDate
+    );
+    response.message =
+      "Token transactions historical data fetched successfully.";
+    res.status(200).json(response);
   })
 );
 
