@@ -43,6 +43,7 @@ async function getTransactionDetails(txHash) {
 
     const receiptObj = deserializeObject(receipt);
     const logList = receiptObj.logs;
+    console.log(`logs: ${logList.length} for tx: ${txHash}`);
 
     for (const entry of logList) {
       const primaryTopic = entry.topics?.[0];
@@ -71,9 +72,10 @@ async function getTransactionDetails(txHash) {
 
           if (quoteCheck) continue;
 
-          const [meta, ethPrice] = await Promise.all([
+          const [meta, ethPrice, btcPrice] = await Promise.all([
             fetchTokenInfo(erc20ABI, tokenTx.dstLog.address),
             getUSDPriceForToken("ETH"),
+            getUSDPriceForToken("BTC"),
           ]);
 
           return {
@@ -87,6 +89,13 @@ async function getTransactionDetails(txHash) {
             tokenValue: tokenTx.tokenValue / 10 ** meta.dec,
             ethAmount: wethTx.value / 10 ** 18,
             usdValue: (wethTx.value / 10 ** 18) * ethPrice.price,
+            tokenPriceInUsd:
+              ((wethTx.value / 10 ** 18) * ethPrice.price) /
+              (tokenTx.tokenValue / 10 ** meta.dec),
+            blockNumber: receiptObj.blockNumber,
+            multiSwap: false,
+            ethCurrentPrice: ethPrice.price,
+            btcCurrentPrice: btcPrice.price,
           };
         }
 
@@ -122,6 +131,10 @@ async function getTransactionDetails(txHash) {
           tokenValue: tokenTx.tokenValue / 10 ** tokenMeta.dec,
           ethAmount: 0,
           usdValue: usdAmt,
+          blockNumber: receiptObj.blockNumber,
+          tokenPriceInUsd: usdAmt / (tokenTx.tokenValue / 10 ** tokenMeta.dec),
+          multiSwap: false,
+          ethCurrentPrice: null,
         };
       }
 
