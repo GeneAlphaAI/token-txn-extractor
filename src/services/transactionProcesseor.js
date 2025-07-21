@@ -330,8 +330,9 @@ class TransactionProcessor {
         async (tx) => {
           try {
             const txDetails = await getTransactionDetails(tx);
+            // console.log(txDetails);
             if (!txDetails) {
-              console.log(`Skipping ${tx.hash} - missing details`);
+              console.log(`Skipping ${tx} - missing details`);
               return null;
             }
 

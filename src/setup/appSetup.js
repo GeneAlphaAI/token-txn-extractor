@@ -1,39 +1,55 @@
-const express = require("express");
-const helmet = require("helmet");
-const morgan = require("morgan");
-const cors = require("cors");
+const express = require('express');
+const security = require('helmet');
+const requestLogger = require('morgan');
+const crossOrigin = require('cors');
 
-const logger = require("../utils/logger");
-const { CustomError } = require("../utils/appUtils");
-const Config = require("../utils/config");
+const log = require('../utils/logger');
+const AppError = require('../utils/appUtils').CustomError;
+const { ALLOWED_ORIGINS, ERROR_INVALID_CORS_ORIGIN } = require('../utils/config');
 
-module.exports = (app) => {
+/**
+ * Configures essential application middleware
+ * @param {express.Application} app - Express application instance
+ */
+const configureMiddleware = (app) => {
+  // Body parsing middleware
+  app.use([
+    express.json(),
+    express.urlencoded({ extended: true })
+  ]);
 
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  // Security middleware
+  app.use(security());
 
+  // Request logging
+  app.use(requestLogger('tiny', { stream: log.stream }));
 
-  // Configure CORS middleware
-  app.use(
-    cors({
-      origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl requests)
-        if (!origin) return callback(null, true);
-        if (!Config.ALLOWED_ORIGINS.includes(origin)) {
-          return callback(
-            new CustomError(
-              "The CORS policy for this site does not allow access from the specified Origin.",
-              Config.ERROR_INVALID_CORS_ORIGIN
-            ),
-            false
-          );
-        }
-        return callback(null, true);
-      },
-      credentials: true,
-    })
-  );
-
-  app.use(helmet());
-  app.use(morgan("tiny", { stream: logger.stream }));
+  // Cross-Origin Resource Sharing configuration
+  app.use(crossOrigin({
+    origin: validateOrigin,
+    credentials: true
+  }));
 };
+
+/**
+ * Validates request origin against allowed origins
+ * @param {string} origin - Request origin
+ * @param {function} callback - CORS callback
+ */
+function validateOrigin(origin, callback) {
+  const allowedOrigins = ALLOWED_ORIGINS;
+  
+  if (!origin || allowedOrigins.includes(origin)) {
+    return callback(null, true);
+  }
+  
+  callback(
+    new AppError(
+      'CORS policy restricts access from this origin',
+      ERROR_INVALID_CORS_ORIGIN
+    ),
+    false
+  );
+}
+
+module.exports = configureMiddleware;
