@@ -234,7 +234,7 @@ class TransactionProcessor {
     );
     if (!timestamp) {
       console.log(
-        `[Recency] No timestamp for block ${lastTxnInTheBatch.blockNumber}`
+        `[Recency] No timestamp for block ${lastTxnInTheBatch?.blockNumber}`
       );
       return { hasRecent: false, lastTimestamp: null };
     }
@@ -284,7 +284,13 @@ class TransactionProcessor {
   /**
    * Processes historical transactions within a date range
    */
-  async generateTokenHistoricalData(tokenAddress, fromDate, toDate) {
+  async generateTokenHistoricalData(
+    tokenAddress,
+    fromDate,
+    toDate,
+    page = 1,
+    limit = 100
+  ) {
     try {
       // Validate date range
       const fromDateObj = new Date(fromDate);
@@ -365,7 +371,6 @@ class TransactionProcessor {
         Math.floor(toDateObj.getTime() / 1000)
       );
 
-      // Process each window in parallel
       const windowResults = await Promise.all(
         hourlyWindows.map(async ([windowStart, transactions]) => {
           if (transactions.length > 0) {
@@ -375,7 +380,23 @@ class TransactionProcessor {
         })
       );
 
-      return windowResults.filter(Boolean).reverse();
+      const allResults = windowResults.filter(Boolean).reverse();
+
+      // Pagination
+      const total = allResults.length;
+      const totalPages = Math.ceil(total / limit);
+      const currentPage = Math.max(1, Math.min(page, totalPages));
+      const offset = (currentPage - 1) * limit;
+
+      const paginatedResults = allResults.slice(offset, offset + limit);
+
+      return {
+        currentPage,
+        totalPages,
+        totalItems: total,
+        perPage: limit,
+        items: paginatedResults,
+      };
     } catch (err) {
       console.error("Historical processing failed:", err);
       throw err;

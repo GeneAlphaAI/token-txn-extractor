@@ -12,10 +12,7 @@ module.exports = class Config {
   };
 
   // Define allowed origins for CORS
-  static ALLOWED_ORIGINS = [
-    "http://localhost:5013",
-
-  ];
+  static ALLOWED_ORIGINS = ["http://localhost:8000"];
 
   // Errors
   static ERROR_NOT_FOUND = "NotFound";
@@ -27,10 +24,6 @@ module.exports = class Config {
   static ERROR_EMPTY_REQ_BODY = "EmptyRequestBody";
   static ERROR_INVALID_INPUT = "InvalidInputError";
   static ERROR_INVALID_CORS_ORIGIN = "InvalidCorsOrigin";
-
-  static BLACK_LISTED_ADDRESSES = [
-    "0x0000000000A39bb272e79075ade125fd351887Ac".toLowerCase(), // BLUR_POOL_ADDRESS
-  ];
 
   constructor() {}
 };

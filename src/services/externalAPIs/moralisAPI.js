@@ -80,8 +80,8 @@ async function fetchTokenTransfersByDate(tokenAddress, fromDate, toDate) {
         limit,
         cursor,
         order: "DESC",
-        fromDate: fromDate,  // Correct parameter name (camelCase)
-        toDate: toDate       // Correct parameter name (camelCase)
+        fromDate: fromDate,  
+        toDate: toDate      
       });
 
       const transfers = response.result;
