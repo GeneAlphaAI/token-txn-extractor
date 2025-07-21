@@ -31,7 +31,6 @@ module.exports = (app) => {
         return callback(null, true);
       },
       credentials: true,
-      // exposedHeaders: "x-session-id",
     })
   );
 
