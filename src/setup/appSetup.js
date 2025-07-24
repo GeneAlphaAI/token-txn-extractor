@@ -26,7 +26,7 @@ const configureMiddleware = (app) => {
 
   // Cross-Origin Resource Sharing configuration
   app.use(crossOrigin({
-    origin: validateOrigin,
+    origin: "*", //validateOrigin
     credentials: true
   }));
 };

@@ -1,7 +1,7 @@
 const express = require("express");
 const chalk = require("chalk");
 const routes = require("./setup/routes");
-// const appSetup = require("./setup/appSetup");
+const appSetup = require("./setup/appSetup");
 require("dotenv").config();
 
 const app = express();
@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 // Middleware setup (body parser, etc.)
 app.use(express.json());
 
-// appSetup(app);
+appSetup(app);
 
 // Routes
 routes(app);
