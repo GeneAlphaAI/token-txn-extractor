@@ -95,7 +95,7 @@ async function fetchTokenTransfersByDate(tokenAddress, fromDate, toDate) {
     console.log(`Found ${allTransfers.length} transfers within date range`);
     return allTransfers;
   } catch (error) {
-    console.error("Error fetching token transfers by date:", error.message);
+    // console.error("Error fetching token transfers by date:", error?.response?.data || error.message);
     throw error;
   }
 }

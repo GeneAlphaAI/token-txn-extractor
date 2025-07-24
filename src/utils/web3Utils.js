@@ -3,6 +3,7 @@ const axios = require("axios");
 const Bottleneck = require("bottleneck");
 const fastCsv = require("fast-csv");
 const fs = require("fs");
+const path = require("path");
 const erc20ABI_Bytes32 = require("../resources/ABIs/erc20ABI-Bytes32.json");
 const erc20_ABI = require("../resources/ABIs/ERC20_ABI.json");
 // const Config = require("./config");
@@ -138,8 +139,11 @@ async function fetchHistoricalPriceData(coinType, timestampValue) {
 }
 
 function initializeTokenPricesFromFiles(
-  ethDataFile = " BYBIT_ETHUSDT_1h.csv",
-  btcDataFile = "btc_1h_data_2018_to_2025.csv"
+  ethDataFile = path.resolve(__dirname, "../resources/BYBIT_ETHUSDT_1h.csv"),
+  btcDataFile = path.resolve(
+    __dirname,
+    "../resources/btc_1h_data_2018_to_2025.csv"
+  )
 ) {
   const ethPriceData = fs
     .readFileSync(ethDataFile, "utf-8")
@@ -153,9 +157,7 @@ function initializeTokenPricesFromFiles(
     const hourTimestampValue = Math.floor(dateValue.getTime() / 1000);
     tokenPriceHistoryETH.set(hourTimestampValue, parseFloat(closingPrice));
   }
-  console.log(
-    `Loaded ${tokenPriceHistoryETH.size} ETH prices from ${ethDataFile}`
-  );
+  console.log(`Loaded ${tokenPriceHistoryETH.size} ETH prices`);
 
   return new Promise((resolve, reject) => {
     fs.createReadStream(btcDataFile)
@@ -167,9 +169,7 @@ function initializeTokenPricesFromFiles(
         tokenPriceHistoryBTC.set(hourValue, closingPrice);
       })
       .on("end", () => {
-        console.log(
-          `Loaded ${tokenPriceHistoryBTC.size} BTC prices from ${btcDataFile}`
-        );
+        console.log(`Loaded ${tokenPriceHistoryBTC.size} BTC prices`);
         resolve();
       })
       .on("error", reject);
@@ -177,7 +177,6 @@ function initializeTokenPricesFromFiles(
 }
 
 function retrieveETHPriceFromStorage(timestampValue) {
-  console.log("Checking ETH price storage for timestamp:", timestampValue);
   const dateObj = new Date(timestampValue * 1000);
   dateObj.setUTCMinutes(0, 0, 0);
   const hourTimestampValue = Math.floor(dateObj.getTime() / 1000);
@@ -185,7 +184,6 @@ function retrieveETHPriceFromStorage(timestampValue) {
 }
 
 function retrieveBTCPriceFromStorage(timestampValue) {
-  console.log("Checking ETH price storage for timestamp:", timestampValue);
   const dateObj = new Date(timestampValue * 1000);
   dateObj.setUTCMinutes(0, 0, 0);
   const hourTimestampValue = Math.floor(dateObj.getTime() / 1000);
