@@ -1,8 +1,8 @@
 const { Web3 } = require("web3");
 const axios = require("axios");
 const Bottleneck = require("bottleneck");
-const fastCsv = require('fast-csv');
-const fs = require('fs');
+const fastCsv = require("fast-csv");
+const fs = require("fs");
 const erc20ABI_Bytes32 = require("../resources/ABIs/erc20ABI-Bytes32.json");
 const erc20_ABI = require("../resources/ABIs/ERC20_ABI.json");
 // const Config = require("./config");
@@ -68,12 +68,16 @@ const {
   Unknown_Router12,
   Unknown_Router13,
   Unknown_Router14,
-  Unknown_Router15
+  Unknown_Router15,
 } = process.env;
 
 // Connection variables with renamed internal vars
-let blockchainHttpProvider = new Web3(new Web3.providers.HttpProvider(RPC_HTTP));
-let blockchainWsProvider = new Web3(new Web3.providers.WebsocketProvider(RPC_WEBSOCKET));
+let blockchainHttpProvider = new Web3(
+  new Web3.providers.HttpProvider(RPC_HTTP)
+);
+let blockchainWsProvider = new Web3(
+  new Web3.providers.WebsocketProvider(RPC_WEBSOCKET)
+);
 
 // Reordered functions and changed internal variable names
 const priceStorage = new Map();
@@ -86,7 +90,7 @@ const requestLimiter = new Bottleneck({
   reservoirRefreshAmount: 5,
   reservoirRefreshInterval: 60 * 1000,
   maxConcurrent: 1,
-  minTime: 2000
+  minTime: 2000,
 });
 
 function formatDateFromTimestamp(timestampValue) {
@@ -117,17 +121,30 @@ async function fetchHistoricalPriceData(coinType, timestampValue) {
   if (priceStorage.has(storageKey)) return priceStorage.get(storageKey);
 
   try {
-    const priceData = await retrieveHistoricalPriceFromAPI(coinType, timestampValue);
+    const priceData = await retrieveHistoricalPriceFromAPI(
+      coinType,
+      timestampValue
+    );
     priceStorage.set(storageKey, priceData);
     return priceData;
   } catch (error) {
-    console.error(`❌ Error fetching ${coinType} price at ${formatDateFromTimestamp(timestampValue)}: ${error.response?.status || error.message}`);
+    console.error(
+      `❌ Error fetching ${coinType} price at ${formatDateFromTimestamp(
+        timestampValue
+      )}: ${error.response?.status || error.message}`
+    );
     return null;
   }
 }
 
-function initializeTokenPricesFromFiles(ethDataFile = " BYBIT_ETHUSDT_1h.csv", btcDataFile = "btc_1h_data_2018_to_2025.csv") {
-  const ethPriceData = fs.readFileSync(ethDataFile, "utf-8").split("\n").slice(1);
+function initializeTokenPricesFromFiles(
+  ethDataFile = " BYBIT_ETHUSDT_1h.csv",
+  btcDataFile = "btc_1h_data_2018_to_2025.csv"
+) {
+  const ethPriceData = fs
+    .readFileSync(ethDataFile, "utf-8")
+    .split("\n")
+    .slice(1);
   for (const dataLine of ethPriceData) {
     if (!dataLine.trim()) continue;
 
@@ -136,7 +153,9 @@ function initializeTokenPricesFromFiles(ethDataFile = " BYBIT_ETHUSDT_1h.csv", b
     const hourTimestampValue = Math.floor(dateValue.getTime() / 1000);
     tokenPriceHistoryETH.set(hourTimestampValue, parseFloat(closingPrice));
   }
-  console.log(`Loaded ${tokenPriceHistoryETH.size} ETH prices from ${ethDataFile}`);
+  console.log(
+    `Loaded ${tokenPriceHistoryETH.size} ETH prices from ${ethDataFile}`
+  );
 
   return new Promise((resolve, reject) => {
     fs.createReadStream(btcDataFile)
@@ -148,7 +167,9 @@ function initializeTokenPricesFromFiles(ethDataFile = " BYBIT_ETHUSDT_1h.csv", b
         tokenPriceHistoryBTC.set(hourValue, closingPrice);
       })
       .on("end", () => {
-        console.log(`Loaded ${tokenPriceHistoryBTC.size} BTC prices from ${btcDataFile}`);
+        console.log(
+          `Loaded ${tokenPriceHistoryBTC.size} BTC prices from ${btcDataFile}`
+        );
         resolve();
       })
       .on("error", reject);
@@ -164,6 +185,7 @@ function retrieveETHPriceFromStorage(timestampValue) {
 }
 
 function retrieveBTCPriceFromStorage(timestampValue) {
+  console.log("Checking ETH price storage for timestamp:", timestampValue);
   const dateObj = new Date(timestampValue * 1000);
   dateObj.setUTCMinutes(0, 0, 0);
   const hourTimestampValue = Math.floor(dateObj.getTime() / 1000);
@@ -292,11 +314,11 @@ async function getUSDPriceForToken(tokenAddress) {
 
 async function fetchPriceByDate(coinIdentifier, timestampValue) {
   const dateObj = new Date(timestampValue * 1000);
-  const formattedDate = `${dateObj.getDate().toString().padStart(2, "0")}-${
-    (dateObj.getMonth() + 1)
-      .toString()
-      .padStart(2, "0")
-  }-${dateObj.getFullYear()}`;
+  const formattedDate = `${dateObj.getDate().toString().padStart(2, "0")}-${(
+    dateObj.getMonth() + 1
+  )
+    .toString()
+    .padStart(2, "0")}-${dateObj.getFullYear()}`;
 
   const apiUrl = `https://api.coingecko.com/api/v3/coins/${coinIdentifier}/history?date=${formattedDate}`;
 
@@ -320,7 +342,9 @@ async function fetchPriceByDate(coinIdentifier, timestampValue) {
 
 async function getETHBalance(walletAddress) {
   try {
-    const balanceAmount = await blockchainHttpProvider.eth.getBalance(walletAddress);
+    const balanceAmount = await blockchainHttpProvider.eth.getBalance(
+      walletAddress
+    );
     return balanceAmount;
   } catch (err) {
     logger.error("Error fetching wallet balance:", err.message);
@@ -341,7 +365,12 @@ async function fetchTokenInfo(contractABI, tokenAddress) {
     const decimalsValue = parseInt(BigInt(decimalPlaces));
     supplyTotal = parseInt(BigInt(supplyTotal)) / 10 ** decimalsValue;
 
-    return { name: tokenName, symbol: tokenSymbol, dec: decimalsValue, totalSupply: supplyTotal };
+    return {
+      name: tokenName,
+      symbol: tokenSymbol,
+      dec: decimalsValue,
+      totalSupply: supplyTotal,
+    };
   } catch (err) {
     const fallbackResult = await fetchTokenInfo(erc20ABI_Bytes32, tokenAddress);
     if (!fallbackResult) return null;
@@ -372,13 +401,18 @@ async function calculateBurnedTokens(tokenContractAddress) {
 
 async function getTokenBalance(tokenContractAddress, walletAddress) {
   try {
-    const tokenInstance = createContractHandler(erc20_ABI, tokenContractAddress);
+    const tokenInstance = createContractHandler(
+      erc20_ABI,
+      tokenContractAddress
+    );
     if (
       tokenInstance.methods.hasOwnProperty("decimals") &&
       tokenInstance.methods.hasOwnProperty("balanceOf")
     ) {
       let decimalCount = await tokenInstance.methods.decimals().call();
-      let balanceAmount = await tokenInstance.methods.balanceOf(walletAddress).call();
+      let balanceAmount = await tokenInstance.methods
+        .balanceOf(walletAddress)
+        .call();
 
       const decimalValue = parseInt(BigInt(decimalCount));
       return parseFloat(BigInt(balanceAmount)) / 10 ** decimalValue;
@@ -408,12 +442,18 @@ async function fetchBlockTime(blockNumberValue) {
   return Number(blockData.timestamp);
 }
 
-async function retrieveTokenTransfers(tokenContractAddress, startBlock, endBlock) {
+async function retrieveTokenTransfers(
+  tokenContractAddress,
+  startBlock,
+  endBlock
+) {
   const transferLogs = await blockchainHttpProvider.eth.getPastLogs({
     address: tokenContractAddress,
     fromBlock: startBlock,
     toBlock: endBlock,
-    topics: [blockchainHttpProvider.utils.sha3("Transfer(address,address,uint256)")],
+    topics: [
+      blockchainHttpProvider.utils.sha3("Transfer(address,address,uint256)"),
+    ],
   });
 
   const transactionMap = new Map();
@@ -443,7 +483,11 @@ async function retrieveTokenTransfers(tokenContractAddress, startBlock, endBlock
   console.log("Unique Transactions:", transactionList.length);
 }
 
-async function fetchTokenTransfersFromAPI(tokenAddress, initialBlock, finalBlock) {
+async function fetchTokenTransfersFromAPI(
+  tokenAddress,
+  initialBlock,
+  finalBlock
+) {
   const apiUrl = `https://api.etherscan.io/api?module=account&action=tokentx&contractaddress=${tokenAddress}&startblock=${initialBlock}&endblock=${finalBlock}&sort=asc&apikey=${process.env.ETHERSCAN_API_KEY}`;
   const apiResponse = await axios.get(apiUrl);
 
@@ -463,7 +507,9 @@ async function fetchTokenTransfersFromAPI(tokenAddress, initialBlock, finalBlock
 
 async function getBlockTime(blockNumberValue) {
   try {
-    const blockInfo = await blockchainHttpProvider.eth.getBlock(blockNumberValue);
+    const blockInfo = await blockchainHttpProvider.eth.getBlock(
+      blockNumberValue
+    );
     return blockInfo.timestamp;
   } catch (err) {
     console.error(
@@ -517,5 +563,5 @@ module.exports = {
   retrieveBTCPriceFromStorage,
   initializeTokenPricesFromFiles,
   retrieveETHPriceFromStorage,
-  filterUniqueTransactions
+  filterUniqueTransactions,
 };

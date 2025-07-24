@@ -85,7 +85,6 @@ async function fetchTokenTransfersByDate(tokenAddress, fromDate, toDate) {
       });
 
       const transfers = response.result;
-      console.log(transfers.length)
       allTransfers.push(...transfers);
 
       // Update cursor for next page

@@ -139,17 +139,6 @@ class TransactionProcessor {
               return null;
             }
 
-            const timestamp = await fetchBlockTime(
-              Number(txDetails.blockNumber)
-            );
-            if (!timestamp) {
-              console.log(
-                `[Details] Skipping ${txHash.slice(0, 8)} (no timestamp)`
-              );
-              return null;
-            }
-
-            txDetails.timestamp = Number(timestamp);
             return txDetails;
           } catch (error) {
             console.log(
@@ -326,31 +315,22 @@ class TransactionProcessor {
       // Enrich transactions with details
       const txDetailsList = await this.runWithConcurrency(
         cleanedTxns,
-        TransactionProcessor.CONCURRENCY_LIMIT,
+        100,
         async (tx) => {
           try {
-            const txDetails = await getTransactionDetails(tx);
-            // console.log(txDetails);
+            const txDetails = await getTransactionDetails(tx, true);
+
             if (!txDetails) {
               console.log(`Skipping ${tx} - missing details`);
               return null;
             }
 
-            const timestamp = await fetchBlockTime(
-              Number(txDetails.blockNumber)
-            );
-            if (!timestamp) {
-              console.log(`Skipping ${tx.hash} - missing timestamp`);
-              return null;
-            }
-
             return {
               ...txDetails,
-              timestamp: Number(timestamp),
-              txHash: tx.hash || tx.transaction_hash,
+              txHash: tx,
             };
           } catch (error) {
-            console.log(`Failed to process ${tx.hash}: ${error.message}`);
+            console.log(`Failed to process ${tx}: ${error.message}`);
             return null;
           }
         }
