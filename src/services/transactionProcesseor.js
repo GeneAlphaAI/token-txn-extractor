@@ -41,20 +41,18 @@ class TransactionProcessor {
       ? buySellTxns[buySellTxns.length - 1].btcCurrentPrice || 0
       : 0;
 
-    const tokenPrices = await Promise.all(
-      buySellTxns.map(async (t) => {
-        if (t?.ethreserve && t?.tokenReserve && ethPrice) {
-          return (t.ethreserve * ethPrice) / t.tokenReserve;
-        }
-        if (t.tokenPriceInUsd) {
-          return t.tokenPriceInUsd;
-        }
-        if (t.usdValue && t.tokenValue) {
-          return t.usdValue / t.tokenValue;
-        }
-        return 0;
-      })
-    );
+    const tokenPrices = buySellTxns.map((t) => {
+      if (t?.ethreserve && t?.tokenReserve && ethPrice) {
+        return (t.ethreserve * ethPrice) / t.tokenReserve;
+      }
+      if (t.tokenPriceInUsd) {
+        return t.tokenPriceInUsd;
+      }
+      if (t.usdValue && t.tokenValue) {
+        return t.usdValue / t.tokenValue;
+      }
+      return 0;
+    });
 
     const avgPrice = tokenPrices.length
       ? tokenPrices.reduce((a, b) => a + b, 0) / tokenPrices.length
@@ -131,14 +129,15 @@ class TransactionProcessor {
           try {
             const txDetails = await getTransactionDetails(txHash);
 
-            // TODO handle v3 txns & usd based txns
             if (!txDetails?.blockNumber) {
               console.log(
                 `[Details] Skipping ${txHash.slice(0, 8)} (missing details)`
               );
               return null;
             }
-
+            console.log(
+              `Processing ${txHash.slice(0, 8)} - ${txDetails.blockNumber}`
+            );
             return txDetails;
           } catch (error) {
             console.log(
@@ -315,7 +314,7 @@ class TransactionProcessor {
       // Enrich transactions with details
       const txDetailsList = await this.runWithConcurrency(
         cleanedTxns,
-        100,
+        60,
         async (tx) => {
           try {
             const txDetails = await getTransactionDetails(tx, true);
@@ -324,6 +323,7 @@ class TransactionProcessor {
               console.log(`Skipping ${tx} - missing details`);
               return null;
             }
+            console.log(`Processing ${tx} - ${txDetails.blockNumber}`);
 
             return {
               ...txDetails,

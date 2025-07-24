@@ -39,12 +39,30 @@ function getTypeOfV2Transaction(primaryAmount, swappedAmount) {
 }
 
 async function getPriceWithFallback(token, timestamp, historicalTxns) {
-  if (!historicalTxns) return getUSDPriceForToken(token);
-  const fallback =
-    token === "ETH"
-      ? retrieveETHPriceFromStorage(timestamp)
-      : retrieveBTCPriceFromStorage(timestamp);
-  return fallback ?? (await getUSDPriceForToken(token));
+  // Fast path if no historical context is available
+  if (!historicalTxns) {
+    const currentPrice = await getUSDPriceForToken(token);
+    return currentPrice?.price || currentPrice;
+  }
+
+  let fallbackPrice;
+
+  // Use stored historical price if timestamp is before cutoff
+  if (timestamp <= 1751922000) {
+    fallbackPrice =
+      token === "ETH"
+        ? retrieveETHPriceFromStorage(timestamp)
+        : retrieveBTCPriceFromStorage(timestamp);
+  }
+
+  // Fallback to live price if no historical price was found
+  const priceData = fallbackPrice ?? (await getUSDPriceForToken(token));
+
+  if (typeof priceData === "object" && priceData?.price) {
+    return priceData.price;
+  }
+
+  return priceData;
 }
 
 async function fetchReserves(logList, tokenMeta) {
@@ -126,7 +144,7 @@ async function getTransactionDetails(txHash, historicalTxns = false) {
 
           const tokenAmount = toTokenAmount(tokenTx.tokenValue, meta.dec);
           const ethAmount = toTokenAmount(wethTx.value, 18);
-          const usdValue = ethAmount * ethPrice.price;
+          const usdValue = ethAmount * ethPrice || ethPrice;
 
           return {
             type: txKind,
@@ -142,8 +160,8 @@ async function getTransactionDetails(txHash, historicalTxns = false) {
             tokenPriceInUsd: usdValue / tokenAmount,
             blockNumber,
             multiSwap: false,
-            ethCurrentPrice: ethPrice.price,
-            btcCurrentPrice: btcPrice.price,
+            ethCurrentPrice: ethPrice,
+            btcCurrentPrice: btcPrice,
             timestamp,
           };
         }
@@ -184,7 +202,8 @@ async function getTransactionDetails(txHash, historicalTxns = false) {
           blockNumber,
           tokenPriceInUsd: usdAmt / tokenAmount,
           multiSwap: false,
-          ethCurrentPrice: null,
+          ethCurrentPrice: 0,
+          btcCurrentPrice: 0,
           timestamp,
         };
       }
@@ -236,15 +255,14 @@ async function getTransactionDetails(txHash, historicalTxns = false) {
             totalSupply: tokenMeta.totalSupply,
             tokenValue: tokenAmount,
             ethAmount,
-            usdValue: usdAmt || ethAmount * ethPrice.price,
-            tokenPriceInUsd:
-              (usdAmt || ethAmount * ethPrice.price) / tokenAmount,
+            usdValue: usdAmt || ethAmount * ethPrice,
+            tokenPriceInUsd: (usdAmt || ethAmount * ethPrice) / tokenAmount,
             blockNumber,
             multiSwap,
             ethreserve: reserves.ethRes,
             tokenReserve: reserves.tokRes,
-            ethCurrentPrice: ethPrice.price,
-            btcCurrentPrice: btcPrice.price,
+            ethCurrentPrice: ethPrice,
+            btcCurrentPrice: btcPrice,
             timestamp,
           };
         };

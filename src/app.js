@@ -2,6 +2,7 @@ const express = require("express");
 const chalk = require("chalk");
 const routes = require("./setup/routes");
 const appSetup = require("./setup/appSetup");
+const { initializeTokenPricesFromFiles } = require("./utils/web3Utils");
 require("dotenv").config();
 
 const app = express();
@@ -14,6 +15,9 @@ appSetup(app);
 
 // Routes
 routes(app);
+
+// load the BTC and ETH price dataset
+initializeTokenPricesFromFiles().then()
 
 app.listen(PORT, () => {
   console.log(
