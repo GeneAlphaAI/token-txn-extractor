@@ -1,8 +1,21 @@
 const { ethers } = require("ethers");
-const { blockchainHttpProvider, transferEventSignatures } = require("../../utils/web3Utils");
+const {
+  blockchainHttpProvider,
+  transferEventSignatures,
+  createPairTokenHandler,
+} = require("../../utils/web3Utils");
+const v2PollABI = require("../../resources/ABIs/v2-pool-abi.json");
 const logger = require("../../utils/logger");
+const Config = require("../../utils/config");
 
-const { RPC_HTTP, WETH_ADDRESS, DAI_ADDRESS, USDT_ADDRESS, USDC_ADDRESS } = process.env;
+const {
+  RPC_HTTP,
+  WETH_ADDRESS,
+  WBTC_ADDRESS,
+  DAI_ADDRESS,
+  USDT_ADDRESS,
+  USDC_ADDRESS,
+} = process.env;
 
 /**
  * Unpacks Uniswap V3 swap event log data
@@ -11,13 +24,16 @@ const { RPC_HTTP, WETH_ADDRESS, DAI_ADDRESS, USDT_ADDRESS, USDC_ADDRESS } = proc
  * @returns {{amount0: number, amount1: number, negativeValue: number}} Parsed swap data
  */
 function decodeV3SwapDataHex(hex) {
-  const result = blockchainHttpProvider.eth.abi.decodeParameters([
-    { type: "int256", name: "amount0" },
-    { type: "int256", name: "amount1" },
-    { type: "uint160", name: "sqrtPriceX96" },
-    { type: "uint128", name: "liquidity" },
-    { type: "int24", name: "tick" },
-  ], hex);
+  const result = blockchainHttpProvider.eth.abi.decodeParameters(
+    [
+      { type: "int256", name: "amount0" },
+      { type: "int256", name: "amount1" },
+      { type: "uint160", name: "sqrtPriceX96" },
+      { type: "uint128", name: "liquidity" },
+      { type: "int24", name: "tick" },
+    ],
+    hex
+  );
 
   const amt0 = parseInt(BigInt(result.amount0));
   const amt1 = parseInt(BigInt(result.amount1));
@@ -34,12 +50,15 @@ function decodeV3SwapDataHex(hex) {
  * @returns {{amount0: number, amount1: number, swapLog: object}} Parsed amounts and log
  */
 function decodeV2SwapDataHex(log) {
-  const parsed = blockchainHttpProvider.eth.abi.decodeParameters([
-    { type: "uint256", name: "amount0In" },
-    { type: "uint256", name: "amount1In" },
-    { type: "uint256", name: "amount0Out" },
-    { type: "uint256", name: "amount1Out" },
-  ], log.data);
+  const parsed = blockchainHttpProvider.eth.abi.decodeParameters(
+    [
+      { type: "uint256", name: "amount0In" },
+      { type: "uint256", name: "amount1In" },
+      { type: "uint256", name: "amount0Out" },
+      { type: "uint256", name: "amount1Out" },
+    ],
+    log.data
+  );
 
   const a0 = parseInt(BigInt(parsed.amount0In));
   const a1 = parseInt(BigInt(parsed.amount1Out));
@@ -52,10 +71,13 @@ function decodeV2SwapDataHex(log) {
 }
 
 function decodeV2ReservesHex(log) {
-  const decoded = blockchainHttpProvider.eth.abi.decodeParameters([
-    { type: "uint112", name: "reserve0" },
-    { type: "uint112", name: "reserve1" },
-  ], log.data);
+  const decoded = blockchainHttpProvider.eth.abi.decodeParameters(
+    [
+      { type: "uint112", name: "reserve0" },
+      { type: "uint112", name: "reserve1" },
+    ],
+    log.data
+  );
 
   return {
     reserve0: parseFloat(decoded.reserve0),
@@ -84,6 +106,25 @@ async function getWETHTransferLog(receipt, swap) {
   return { dstLog: matchedLog, value: amount };
 }
 
+async function getWBTCTransferLog(receipt, swap) {
+  let matchedLog = null;
+  let amount = 0;
+
+  for (const entry of receipt.logs) {
+    if (
+      transferEventSignatures.includes(entry.topics[0]) &&
+      entry.address.toLowerCase() === WBTC_ADDRESS.toLowerCase()
+    ) {
+      amount = decodeTransferDataHex(entry.data);
+      if (amount === swap.amount0 || amount === swap.amount1) {
+        matchedLog = entry;
+        break;
+      }
+    }
+  }
+  return { dstLog: matchedLog, value: amount };
+}
+
 async function getUSDTransferLog(receipt, swap) {
   let match = null;
   let amount = 0;
@@ -93,7 +134,9 @@ async function getUSDTransferLog(receipt, swap) {
     const address = lowerAddr(log.address);
     if (
       transferEventSignatures.includes(log.topics[0]) &&
-      [USDT_ADDRESS, USDC_ADDRESS, DAI_ADDRESS].some(token => lowerAddr(token) === address)
+      [USDT_ADDRESS, USDC_ADDRESS, DAI_ADDRESS].some(
+        (token) => lowerAddr(token) === address
+      )
     ) {
       amount = decodeTransferDataHex(log.data);
       match = log;
@@ -117,20 +160,25 @@ function isDifferenceUnder10Percent(valA, valB) {
 async function getTokenTransferLog(receipt, swap, includesUSD, ethAmount) {
   let logMatch = null;
   let derivedValue = 0;
-  const expectedTokenAmt = swap.amount0 === ethAmount ? swap.amount1 : swap.amount0;
+  const expectedTokenAmt =
+    swap.amount0 === ethAmount ? swap.amount1 : swap.amount0;
 
   for (const item of receipt.logs) {
-    if (!transferEventSignatures.includes(item.topics[0]) || item.data === "0x") continue;
+    if (!transferEventSignatures.includes(item.topics[0]) || item.data === "0x")
+      continue;
 
     const addr = item.address.toLowerCase();
     const val = decodeTransferDataHex(item.data);
 
-    const isValidToken =
-      includesUSD
-        ? ![WETH_ADDRESS, USDT_ADDRESS, USDC_ADDRESS, DAI_ADDRESS].includes(addr)
-        : addr !== WETH_ADDRESS.toLowerCase();
+    const isValidToken = includesUSD
+      ? ![WETH_ADDRESS, USDT_ADDRESS, USDC_ADDRESS, DAI_ADDRESS,WBTC_ADDRESS].includes(addr)
+      : addr !== WETH_ADDRESS.toLowerCase();
 
-    if (isValidToken && (val === expectedTokenAmt || isDifferenceUnder10Percent(val, expectedTokenAmt))) {
+    if (
+      isValidToken &&
+      (val === expectedTokenAmt ||
+        isDifferenceUnder10Percent(val, expectedTokenAmt))
+    ) {
       logMatch = item;
       derivedValue = val;
       break;
@@ -139,12 +187,15 @@ async function getTokenTransferLog(receipt, swap, includesUSD, ethAmount) {
 
   if (!logMatch) {
     for (const log of receipt.logs) {
-      if (!transferEventSignatures.includes(log.topics[0]) || log.data === "0x") continue;
+      if (!transferEventSignatures.includes(log.topics[0]) || log.data === "0x")
+        continue;
       const addr = log.address.toLowerCase();
 
       if (
         includesUSD &&
-        ![WETH_ADDRESS, USDT_ADDRESS, USDC_ADDRESS, DAI_ADDRESS].includes(addr) &&
+        ![WETH_ADDRESS, USDT_ADDRESS, USDC_ADDRESS, DAI_ADDRESS].includes(
+          addr
+        ) &&
         log?.topics?.[2]?.toLowerCase() === receipt.to.toLowerCase()
       ) {
         logMatch = log;
@@ -160,7 +211,8 @@ async function getTokenTransferLog(receipt, swap, includesUSD, ethAmount) {
 
         if (matchFrom || matchTo) {
           logMatch = log;
-          derivedValue = swap.amount0 === ethAmount ? swap.amount1 : swap.amount0;
+          derivedValue =
+            swap.amount0 === ethAmount ? swap.amount1 : swap.amount0;
           break;
         }
       }
@@ -171,7 +223,10 @@ async function getTokenTransferLog(receipt, swap, includesUSD, ethAmount) {
 }
 
 function decodeTransferDataHex(data) {
-  const decoded = blockchainHttpProvider.eth.abi.decodeParameters([{ type: "uint256", name: "wad" }], data);
+  const decoded = blockchainHttpProvider.eth.abi.decodeParameters(
+    [{ type: "uint256", name: "wad" }],
+    data
+  );
   return parseInt(BigInt(decoded.wad));
 }
 
@@ -182,7 +237,10 @@ function getSpotPrice(resAlt, resBase, decAlt = 18, decBase = 18) {
 }
 
 function decodeAddressHexToAddress(hex) {
-  const decoded = blockchainHttpProvider.eth.abi.decodeParameters([{ type: "address", name: "address" }], hex);
+  const decoded = blockchainHttpProvider.eth.abi.decodeParameters(
+    [{ type: "address", name: "address" }],
+    hex
+  );
   return decoded.address;
 }
 
@@ -203,8 +261,10 @@ async function isERC20(address) {
   if (bytecode === "0x") return false;
 
   const signatures = {
-    Transfer: "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    Approval: "8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+    Transfer:
+      "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+    Approval:
+      "8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
   };
 
   const hasTransfer = bytecode.includes(signatures.Transfer);
@@ -223,7 +283,10 @@ async function isERC20(address) {
     await Promise.all([
       contract.totalSupply(),
       contract.balanceOf("0x0000000000000000000000000000000000000000"),
-      contract.allowance("0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000"),
+      contract.allowance(
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000"
+      ),
     ]);
     return true;
   } catch (e) {
@@ -234,6 +297,43 @@ async function isERC20(address) {
 
 function extractMethodSelector(input) {
   return input.slice(0, 10);
+}
+
+async function getPairTokens(poolAddress) {
+  const pool = createPairTokenHandler(v2PollABI, poolAddress);
+
+  let baseToken, quoteToken;
+  try {
+    let [token0, token1] = await Promise.all([
+      pool.methods.token0().call(),
+      pool.methods.token1().call(),
+    ]);
+
+    token0 = token0.toLowerCase();
+    token1 = token1.toLowerCase();
+
+    if (
+      Config.QUOTE_TOKENS.includes(token0) &&
+      Config.QUOTE_TOKENS.includes(token1)
+    ) {
+      logger.warn(`Pool ${poolAddress} contains both quote tokens.`);
+      return { poolAddress, baseToken: null, quoteToken: null };
+    } else if (Config.QUOTE_TOKENS.includes(token0)) {
+      quoteToken = token0;
+      baseToken = token1;
+    } else if (Config.QUOTE_TOKENS.includes(token1)) {
+      baseToken = token0;
+      quoteToken = token1;
+    } else {
+      // Bypassing ERC20 <--> ERC20 pair tokens
+      logger.warn(`Pool ${poolAddress} does not contain a quote token.`);
+      return { poolAddress, baseToken: null, quoteToken: null };
+    }
+    return { poolAddress, baseToken, quoteToken };
+  } catch (error) {
+    logger.error(error);
+    return { poolAddress, baseToken: null, quoteToken: null };
+  }
 }
 
 module.exports = {
@@ -250,4 +350,7 @@ module.exports = {
   decodeV2ReservesHex,
   getSpotPrice,
   getUSDMultiSwapTransferLog,
+  getWBTCTransferLog,
+  getPairTokens
+  
 };

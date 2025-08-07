@@ -23,9 +23,13 @@ const {
   decodeV2SwapDataHex,
   decodeV2ReservesHex,
   getUSDMultiSwapTransferLog,
+  getWBTCTransferLog,
+  getPairTokens,
 } = require("./web3Helper");
 
 const { deserializeObject } = require("../../utils/appUtils");
+const Config = require("../../utils/config");
+const logger = require("../../utils/logger");
 
 const { UNISWAP_V2_SWAP_TOPIC, UNISWAP_V3_SWAP_TOPIC, WETH_ADDRESS } =
   process.env;
@@ -99,182 +103,261 @@ function toTokenAmount(value, decimals) {
   return value / 10 ** decimals;
 }
 
-async function getTransactionDetails(txHash, historicalTxns = false) {
+async function identifyNProcessTxns(txHash, historicalTxns = false) {
   try {
     const receipt = await blockchainHttpProvider.eth.getTransactionReceipt(
       txHash
     );
-    if (!receipt || !receipt.status || !receipt.logs || !receipt.to)
-      return null;
+    // for (const { tx, receipt } of results) {
+    if (!receipt.status) return;
 
-    const receiptObj = deserializeObject(receipt);
-    const logList = receiptObj.logs;
-    const blockNumber = Number(receiptObj.blockNumber);
-
-    for (const entry of logList) {
-      const primaryTopic = entry.topics?.[0];
-
-      if (primaryTopic === UNISWAP_V3_SWAP_TOPIC) {
-        const parsed = decodeV3SwapDataHex(entry.data);
-        const wethTx = await getWETHTransferLog(receiptObj, parsed);
-
-        if (wethTx.dstLog) {
-          const tokenTx = await getTokenTransferLog(
-            receiptObj,
-            parsed,
-            false,
-            wethTx.value
+    if (
+      receipt.logs.length === 1 &&
+      receipt.logs[0].topics[0] === Config.TRANSFER_TOPIC &&
+      receipt.logs[0].data !== "0x"
+    ) {
+      // if (
+      //   receipt.to &&
+      //   Config.BLACK_LISTED_ADDRESSES.includes(receipt.to.toLowerCase())
+      // )
+      return;
+    } else if (receipt.logs.length > 1) {
+      // get all the swap logs
+      const allSwapLogs = receipt.logs.filter(
+        (log) =>
+          log.topics[0] === Config.UNISWAP_V2_SWAP_TOPIC ||
+          log.topics[0] === Config.UNISWAP_V3_SWAP_TOPIC
+      );
+      if (allSwapLogs.length === 0) return;
+      else if (allSwapLogs.length === 1) {
+        const pair = await getPairTokens(allSwapLogs[0].address);
+        if (pair.baseToken && pair.quoteToken) {
+          return await getTransactionDetails(
+            receipt,
+            pair,
+            allSwapLogs[0],
+            historicalTxns
           );
-          if (
-            referenceTokens.includes(wethTx.dstLog.address.toLowerCase()) &&
-            referenceTokens.includes(tokenTx.dstLog?.address?.toLowerCase())
-          )
-            continue;
-
-          const txKind = getTypeOfV3Transaction(
-            wethTx.value,
-            parsed.negativeValue
-          );
-          const timestamp = await fetchBlockTime(blockNumber);
-          const [meta, ethPrice, btcPrice] = await Promise.all([
-            fetchTokenInfo(erc20ABI, tokenTx.dstLog.address),
-            getPriceWithFallback("ETH", timestamp, historicalTxns),
-            getPriceWithFallback("BTC", timestamp, historicalTxns),
-          ]);
-
-          const tokenAmount = toTokenAmount(tokenTx.tokenValue, meta.dec);
-          const ethAmount = toTokenAmount(wethTx.value, 18);
-          const usdValue = ethAmount * ethPrice || ethPrice;
-
-          return {
-            type: txKind,
-            txHash,
-            token: tokenTx.dstLog.address,
-            name: meta.name,
-            symbol: meta.symbol,
-            decimals: meta.dec,
-            totalSupply: meta.totalSupply,
-            tokenValue: tokenAmount,
-            ethAmount,
-            usdValue,
-            tokenPriceInUsd: usdValue / tokenAmount,
-            blockNumber,
-            multiSwap: false,
-            ethCurrentPrice: ethPrice,
-            btcCurrentPrice: btcPrice,
-            timestamp,
-          };
         }
+      } else {
+        logger.warn(
+          `Multiple pools found in transaction receipt: ${allSwapLogs.length}.`
+        );
 
-        const usdTx = await getUSDTransferLog(receiptObj, parsed);
+        const swapLogsWithPairs = await Promise.all(
+          allSwapLogs.map(async (log) => ({
+            log,
+            pair: await getPairTokens(log.address),
+          }))
+        );
+
+        const validPairs = swapLogsWithPairs.filter(
+          (item) => item.pair.baseToken && item.pair.quoteToken
+        );
+
+        // Process trades
+        return await Promise.all(
+          validPairs.map(
+            (item) =>
+              getTransactionDetails(
+                receipt,
+                item.pair,
+                item.log,
+                historicalTxns
+              ) // Pass specific log
+          )
+        );
+      }
+    }
+  } catch (error) {
+    if (error.code != "CALL_EXCEPTION") {
+      console.error(error);
+    }
+  }
+}
+
+async function getTransactionDetails(
+  receiptObj,
+  pair,
+  swapLog,
+  historicalTxns
+) {
+  try {
+    const txHash = receiptObj.transactionHash;
+    const blockNumber = Number(receiptObj.blockNumber);
+    const logList = receiptObj.logs;
+    let v2SwapLog, v3SwapLog;
+    if (
+      swapLog.topics[0] === Config.UNISWAP_V2_SWAP_TOPIC &&
+      swapLog.address.toLowerCase() === pair.poolAddress.toLowerCase()
+    ) {
+      v2SwapLog = swapLog;
+    } else if (
+      swapLog.topics[0] === Config.UNISWAP_V3_SWAP_TOPIC &&
+      swapLog.address.toLowerCase() === pair.poolAddress.toLowerCase()
+    ) {
+      v3SwapLog = swapLog;
+    }
+
+    if (v3SwapLog) {
+      const parsed = decodeV3SwapDataHex(v3SwapLog.data);
+
+      const [ethTx, usdTx, timestamp] = await Promise.all([
+        getWETHTransferLog(receiptObj, parsed),
+        getUSDMultiSwapTransferLog(receiptObj, parsed),
+        fetchBlockTime(blockNumber),
+      ]);
+
+      const handleSwap = async (
+        usdTransfer,
+        ethTransfer,
+        multiSwap = false
+      ) => {
         const tokenTx = await getTokenTransferLog(
           receiptObj,
           parsed,
-          true,
-          usdTx.value
+          multiSwap,
+          ethTransfer?.value || usdTransfer.value
         );
-        if (!tokenTx.dstLog) continue;
+        if (!tokenTx.dstLog) return null;
 
-        const txKind = getTypeOfV3Transaction(
-          usdTx.value,
-          parsed.negativeValue
-        );
-        const timestamp = await fetchBlockTime(blockNumber);
-        const [usdMeta, tokenMeta] = await Promise.all([
-          fetchTokenInfo(erc20ABI, usdTx.dstLog.address),
+        const [usdMeta, tokenMeta, ethPrice, btcPrice] = await Promise.all([
+          fetchTokenInfo(erc20ABI, usdTransfer.dstLog.address),
           fetchTokenInfo(erc20ABI, tokenTx.dstLog.address),
+          getPriceWithFallback("ETH", timestamp, historicalTxns),
+          getPriceWithFallback("BTC", timestamp, historicalTxns),
         ]);
 
-        const usdAmt = toTokenAmount(usdTx.value, usdMeta.dec);
+        const usdAmt = toTokenAmount(usdTransfer.value, usdMeta.dec);
         const tokenAmount = toTokenAmount(tokenTx.tokenValue, tokenMeta.dec);
+        const ethAmount = ethTransfer
+          ? toTokenAmount(ethTransfer.value, 18)
+          : 0;
+        const reserves = await fetchReserves(logList, tokenMeta);
 
         return {
-          type: txKind,
-          txHash,
+          type: getTypeOfV3Transaction(
+            usdTransfer.value || ethTransfer.value,
+            parsed.amount0
+          ),
+          txHash: txHash,
           token: tokenTx.dstLog.address,
           name: tokenMeta.name,
           symbol: tokenMeta.symbol,
           decimals: tokenMeta.dec,
           totalSupply: tokenMeta.totalSupply,
           tokenValue: tokenAmount,
-          ethAmount: 0,
-          usdValue: usdAmt,
-          blockNumber,
-          tokenPriceInUsd: usdAmt / tokenAmount,
-          multiSwap: false,
-          ethCurrentPrice: 0,
-          btcCurrentPrice: 0,
-          timestamp,
+          ethAmount: ethAmount || 0,
+          usdValue: usdAmt || ethAmount * ethPrice,
+          tokenPriceInUsd: (usdAmt || ethAmount * ethPrice) / tokenAmount,
+          blockNumber: blockNumber,
+          multiSwap: multiSwap,
+          ethreserve: reserves.ethRes,
+          tokenReserve: reserves.tokRes,
+          ethCurrentPrice: ethPrice,
+          btcCurrentPrice: btcPrice,
+          timestamp: timestamp,
         };
-      }
+      };
 
-      if (primaryTopic === UNISWAP_V2_SWAP_TOPIC) {
-        const parsed = decodeV2SwapDataHex(entry);
-        const ethTx = await getWETHTransferLog(receiptObj, parsed);
-        const usdTx = await getUSDMultiSwapTransferLog(receiptObj, parsed);
-        const fallbackUsd = await getUSDTransferLog(receiptObj, parsed);
-        const timestamp = await fetchBlockTime(blockNumber);
+      // weth trades
+      if (ethTx.dstLog && !usdTx.dstLog && !usdTx.value)
+        return await handleSwap({ value: 0, dstLog: ethTx.dstLog }, ethTx);
+      // weth + usd trades
+      if (ethTx.dstLog && usdTx.dstLog)
+        return await handleSwap(usdTx, ethTx, true);
 
-        const handleSwap = async (
-          usdTransfer,
-          ethTransfer,
-          multiSwap = false
-        ) => {
-          const tokenTx = await getTokenTransferLog(
-            receiptObj,
-            parsed,
-            true,
-            usdTransfer.value || ethTransfer?.value
-          );
-          if (!tokenTx.dstLog) return null;
-
-          const [usdMeta, tokenMeta, ethPrice, btcPrice] = await Promise.all([
-            fetchTokenInfo(erc20ABI, usdTransfer.dstLog.address),
-            fetchTokenInfo(erc20ABI, tokenTx.dstLog.address),
-            getPriceWithFallback("ETH", timestamp, historicalTxns),
-            getPriceWithFallback("BTC", timestamp, historicalTxns),
-          ]);
-
-          const usdAmt = toTokenAmount(usdTransfer.value, usdMeta.dec);
-          const tokenAmount = toTokenAmount(tokenTx.tokenValue, tokenMeta.dec);
-          const ethAmount = ethTransfer
-            ? toTokenAmount(ethTransfer.value, 18)
-            : 0;
-          const reserves = await fetchReserves(logList, tokenMeta);
-
-          return {
-            type: getTypeOfV2Transaction(
-              usdTransfer.value || ethTransfer.value,
-              parsed.amount0
-            ),
-            txHash,
-            token: tokenTx.dstLog.address,
-            name: tokenMeta.name,
-            symbol: tokenMeta.symbol,
-            decimals: tokenMeta.dec,
-            totalSupply: tokenMeta.totalSupply,
-            tokenValue: tokenAmount,
-            ethAmount,
-            usdValue: usdAmt || ethAmount * ethPrice,
-            tokenPriceInUsd: (usdAmt || ethAmount * ethPrice) / tokenAmount,
-            blockNumber,
-            multiSwap,
-            ethreserve: reserves.ethRes,
-            tokenReserve: reserves.tokRes,
-            ethCurrentPrice: ethPrice,
-            btcCurrentPrice: btcPrice,
-            timestamp,
-          };
-        };
-
-        if (ethTx.dstLog && !usdTx.dstLog && !usdTx.value)
-          return await handleSwap({ value: 0, dstLog: ethTx.dstLog }, ethTx);
-        if (ethTx.dstLog && usdTx.dstLog)
-          return await handleSwap(usdTx, ethTx, true);
-        if (fallbackUsd.dstLog || fallbackUsd.value)
-          return await handleSwap(fallbackUsd, null);
-      }
+      const [btcTx, fallbackUsd] = await Promise.all([
+        getWBTCTransferLog(receiptObj, parsed),
+        getUSDTransferLog(receiptObj, parsed),
+      ]);
+      // wbtc + usd trades
+      if (btcTx.dstLog && usdTx.dstLog)
+        return await handleSwap(usdTx, btcTx, true);
+      // usd only trades
+      if (fallbackUsd.dstLog || fallbackUsd.value)
+        return await handleSwap(fallbackUsd, null, true);
     }
+
+    if (v2SwapLog) {
+      const parsed = decodeV2SwapDataHex(v2SwapLog);
+
+      const [ethTx, usdTx, timestamp] = await Promise.all([
+        getWETHTransferLog(receiptObj, parsed),
+        getUSDMultiSwapTransferLog(receiptObj, parsed),
+        fetchBlockTime(blockNumber),
+      ]);
+
+      const handleSwap = async (
+        usdTransfer,
+        ethTransfer,
+        multiSwap = false
+      ) => {
+        const tokenTx = await getTokenTransferLog(
+          receiptObj,
+          parsed,
+          multiSwap,
+          usdTransfer.value || ethTransfer?.value
+        );
+        if (!tokenTx.dstLog) return null;
+
+        const [usdMeta, tokenMeta, ethPrice, btcPrice] = await Promise.all([
+          fetchTokenInfo(erc20ABI, usdTransfer.dstLog.address),
+          fetchTokenInfo(erc20ABI, tokenTx.dstLog.address),
+          getPriceWithFallback("ETH", timestamp, historicalTxns),
+          getPriceWithFallback("BTC", timestamp, historicalTxns),
+        ]);
+
+        const usdAmt = toTokenAmount(usdTransfer.value, usdMeta.dec);
+        const tokenAmount = toTokenAmount(tokenTx.tokenValue, tokenMeta.dec);
+        const ethAmount = ethTransfer
+          ? toTokenAmount(ethTransfer.value, 18)
+          : 0;
+        const reserves = await fetchReserves(logList, tokenMeta);
+
+        return {
+          type: getTypeOfV2Transaction(
+            usdTransfer.value || ethTransfer.value,
+            parsed.amount0
+          ),
+          txHash: txHash,
+          token: tokenTx.dstLog.address,
+          name: tokenMeta.name,
+          symbol: tokenMeta.symbol,
+          decimals: tokenMeta.dec,
+          totalSupply: tokenMeta.totalSupply,
+          tokenValue: tokenAmount,
+          ethAmount: ethAmount || 0,
+          usdValue: usdAmt || ethAmount * ethPrice,
+          tokenPriceInUsd: (usdAmt || ethAmount * ethPrice) / tokenAmount,
+          blockNumber: blockNumber,
+          multiSwap: multiSwap,
+          ethreserve: reserves.ethRes,
+          tokenReserve: reserves.tokRes,
+          ethCurrentPrice: ethPrice,
+          btcCurrentPrice: btcPrice,
+          timestamp: timestamp,
+        };
+      };
+
+      // weth trades
+      if (ethTx.dstLog && !usdTx.dstLog && !usdTx.value)
+        return await handleSwap({ value: 0, dstLog: ethTx.dstLog }, ethTx);
+      // weth + usd trades
+      if (ethTx.dstLog && usdTx.dstLog)
+        return await handleSwap(usdTx, ethTx, true);
+      const [btcTx, fallbackUsd] = await Promise.all([
+        getWBTCTransferLog(receiptObj, parsed),
+        getUSDTransferLog(receiptObj, parsed),
+      ]);
+      // wbtc + usd trades
+      if (btcTx.dstLog && usdTx.dstLog)
+        return await handleSwap(usdTx, btcTx, true);
+      // usd only trades
+      if (fallbackUsd.dstLog || fallbackUsd.value)
+        return await handleSwap(fallbackUsd, null, true);
+    }
+
     return null;
   } catch (err) {
     console.error("Failed to extract txn details:", err);
@@ -284,6 +367,7 @@ async function getTransactionDetails(txHash, historicalTxns = false) {
 
 module.exports = {
   getTransactionDetails,
+  identifyNProcessTxns,
   getTypeOfV3Transaction,
   getTypeOfV2Transaction,
 };
