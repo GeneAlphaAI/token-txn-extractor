@@ -62,6 +62,18 @@ class TransactionProcessor {
       }
       return 0;
     });
+    const tokenPrices = buySellTxns.map((t) => {
+      if (t?.ethreserve && t?.tokenReserve && ethPrice) {
+        return (t.ethreserve * ethPrice) / t.tokenReserve;
+      }
+      if (t.tokenPriceInUsd) {
+        return t.tokenPriceInUsd;
+      }
+      if (t.usdValue && t.tokenValue) {
+        return t.usdValue / t.tokenValue;
+      }
+      return 0;
+    });
 
     const avgPrice = tokenPrices.length
       ? tokenPrices.reduce((a, b) => a + b, 0) / tokenPrices.length
@@ -412,6 +424,7 @@ class TransactionProcessor {
       const txDetailsList = await this.runWithConcurrency(
         cleanedTxns,
         60,
+        60,
         async (tx) => {
           try {
             const txDetails = await identifyNProcessTxns(tx, true);
@@ -420,6 +433,7 @@ class TransactionProcessor {
               console.log(`Skipping ${tx} - missing details`);
               return null;
             }
+            console.log(`Processing ${tx} - ${txDetails.blockNumber}`);
             console.log(`Processing ${tx} - ${txDetails.blockNumber}`);
 
             return {

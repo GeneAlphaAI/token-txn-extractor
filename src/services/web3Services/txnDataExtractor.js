@@ -67,6 +67,30 @@ async function getPriceWithFallback(token, timestamp, historicalTxns) {
   }
 
   return priceData;
+  // Fast path if no historical context is available
+  if (!historicalTxns) {
+    const currentPrice = await getUSDPriceForToken(token);
+    return currentPrice?.price || currentPrice;
+  }
+
+  let fallbackPrice;
+
+  // Use stored historical price if timestamp is before cutoff
+  if (timestamp <= 1751922000) {
+    fallbackPrice =
+      token === "ETH"
+        ? retrieveETHPriceFromStorage(timestamp)
+        : retrieveBTCPriceFromStorage(timestamp);
+  }
+
+  // Fallback to live price if no historical price was found
+  const priceData = fallbackPrice ?? (await getUSDPriceForToken(token));
+
+  if (typeof priceData === "object" && priceData?.price) {
+    return priceData.price;
+  }
+
+  return priceData;
 }
 
 async function fetchReserves(logList, tokenMeta) {

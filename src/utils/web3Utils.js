@@ -4,6 +4,7 @@ const Bottleneck = require("bottleneck");
 const fastCsv = require("fast-csv");
 const fs = require("fs");
 const path = require("path");
+const path = require("path");
 const erc20ABI_Bytes32 = require("../resources/ABIs/erc20ABI-Bytes32.json");
 const erc20_ABI = require("../resources/ABIs/ERC20_ABI.json");
 // const Config = require("./config");
