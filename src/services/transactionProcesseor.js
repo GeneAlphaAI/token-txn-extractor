@@ -62,18 +62,6 @@ class TransactionProcessor {
       }
       return 0;
     });
-    const tokenPrices = buySellTxns.map((t) => {
-      if (t?.ethreserve && t?.tokenReserve && ethPrice) {
-        return (t.ethreserve * ethPrice) / t.tokenReserve;
-      }
-      if (t.tokenPriceInUsd) {
-        return t.tokenPriceInUsd;
-      }
-      if (t.usdValue && t.tokenValue) {
-        return t.usdValue / t.tokenValue;
-      }
-      return 0;
-    });
 
     const avgPrice = tokenPrices.length
       ? tokenPrices.reduce((a, b) => a + b, 0) / tokenPrices.length
