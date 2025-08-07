@@ -1,4 +1,6 @@
-const { getTransactionDetails } = require("./web3Services/txnDataExtractor");
+const {
+  identifyNProcessTxns,
+} = require("./web3Services/txnDataExtractor");
 const {
   fetchBlockTime,
   filterUniqueTransactions,
@@ -7,15 +9,22 @@ const {
   fetchTokenTransfers,
   fetchTokenTransfersByDate,
 } = require("./externalAPIs/moralisAPI");
+const {
+  identifyNProcessWethTxns,
+} = require("./web3Services/wethDataExtractor");
+const fs = require("fs");
+const path = require("path");
+const { parse } = require("json2csv"); 
+const csv = require('csv-parser');
+
 
 class TransactionProcessor {
   static CONCURRENCY_LIMIT = 70;
+  static BATCH_SIZE = 10000;
+  static CONCURRENCY = 2000;
 
   constructor() {}
 
-  /**
-   * Builds a comprehensive hourly window analysis from transaction data
-   */
   async buildHourlyWindow(windowStart, transactions) {
     const windowEnd = windowStart + 3600;
     const buySellTxns = transactions.filter(
@@ -41,20 +50,18 @@ class TransactionProcessor {
       ? buySellTxns[buySellTxns.length - 1].btcCurrentPrice || 0
       : 0;
 
-    const tokenPrices = await Promise.all(
-      buySellTxns.map(async (t) => {
-        if (t?.ethreserve && t?.tokenReserve && ethPrice) {
-          return (t.ethreserve * ethPrice) / t.tokenReserve;
-        }
-        if (t.tokenPriceInUsd) {
-          return t.tokenPriceInUsd;
-        }
-        if (t.usdValue && t.tokenValue) {
-          return t.usdValue / t.tokenValue;
-        }
-        return 0;
-      })
-    );
+    const tokenPrices = buySellTxns.map((t) => {
+      if (t?.ethreserve && t?.tokenReserve && ethPrice) {
+        return (t.ethreserve * ethPrice) / t.tokenReserve;
+      }
+      if (t.tokenPriceInUsd) {
+        return t.tokenPriceInUsd;
+      }
+      if (t.usdValue && t.tokenValue) {
+        return t.usdValue / t.tokenValue;
+      }
+      return 0;
+    });
 
     const avgPrice = tokenPrices.length
       ? tokenPrices.reduce((a, b) => a + b, 0) / tokenPrices.length
@@ -84,6 +91,94 @@ class TransactionProcessor {
       endBlock: Math.max(...transactions.map((t) => t.blockNumber)),
       transactionHashes: transactions.map((t) => t.txHash).join(", "),
       multiSwap: transactions.some((t) => t.multiSwap) ? "Yes" : "No",
+    };
+  }
+
+  /**
+   * Builds a summary object for a 1-minute window of WETH transactions.
+   *
+   * Filters transactions for BUY and SELL types, calculates counts, volumes, prices, and other metrics.
+   *
+   * @async
+   * @param {number} windowStart - The start timestamp (in seconds) of the window.
+   * @param {Array<Object>} transactions - Array of transaction objects to process.
+   * @param {string} transactions[].type - The transaction type ("BUY" or "SELL").
+   * @param {number} [transactions[].ethAmount] - Amount of ETH involved in the transaction.
+   * @param {number} [transactions[].usdValue] - USD value of the transaction.
+   * @param {number} [transactions[].ethCurrentPrice] - Current ETH price at transaction time.
+   * @param {number} [transactions[].btcCurrentPrice] - Current BTC price at transaction time.
+   * @param {number} transactions[].blockNumber - Block number of the transaction.
+   * @param {string} transactions[].txHash - Transaction hash.
+   * @param {boolean} [transactions[].multiSwap] - Indicates if the transaction is a multi-swap.
+   *
+   * @returns {Promise<Object>} Summary of the window including counts, volumes, prices, block range, and other metrics.
+   */
+  async buildMinWindowOfWeth(windowStart, transactions) {
+    const windowEnd = windowStart + 60; // 1 minute window
+    const buySellTxns = transactions.filter(
+      (t) => t.type === "BUY" || t.type === "SELL"
+    );
+
+    const buyCount = buySellTxns.filter((t) => t.type === "BUY").length;
+    const sellCount = buySellTxns.filter((t) => t.type === "SELL").length;
+
+    const tokenVolume = buySellTxns.reduce(
+      (acc, t) => acc + (t.ethAmount || 0),
+      0
+    );
+    const tokenVolumeUSD = buySellTxns.reduce(
+      (acc, t) => acc + (t.usdValue || 0),
+      0
+    );
+
+    let ethPrice = buySellTxns.length
+      ? buySellTxns[buySellTxns.length - 1].ethCurrentPrice || 0
+      : 0;
+    let btcPrice = buySellTxns.length
+      ? buySellTxns[buySellTxns.length - 1].btcCurrentPrice || 0
+      : 0;
+
+    const tokenPrices = buySellTxns.map((t) => {
+      // if (t?.ethreserve && t?.tokenReserve && ethPrice) {
+      //   return (t.ethreserve * ethPrice) / t.tokenReserve;
+      // }
+      if (t.ethCurrentPrice) {
+        return t.ethCurrentPrice;
+      }
+      if (t.usdValue && t.ethAmount) {
+        return t.usdValue / t.ethAmount;
+      }
+      return 0;
+    });
+
+    const avgPrice = tokenPrices.length
+      ? tokenPrices.reduce((a, b) => a + b, 0) / tokenPrices.length
+      : 0;
+    const latestPrice = tokenPrices.length
+      ? tokenPrices[tokenPrices.length - 1]
+      : 0;
+
+    const formatDateTime = (ts) =>
+      new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 19);
+
+    return {
+      minStartUTC: formatDateTime(windowStart),
+      minEndUTC: formatDateTime(windowEnd),
+      totalTxns: transactions.length,
+      buyCount,
+      sellCount,
+      activeAddressCount: buyCount + sellCount,
+      lastTokenPrice: tokenPrices[0] || 0,
+      latestTokenPrice: latestPrice,
+      avgTokenPrice: avgPrice,
+      tokenVolume: tokenVolume.toFixed(2),
+      tokenVolumeUSD: tokenVolumeUSD.toFixed(2),
+      ethPrice: ethPrice?.toFixed(2) || "N/A",
+      btcPrice: btcPrice?.toFixed(2) || "N/A",
+      startBlock: Math.min(...transactions.map((t) => t.blockNumber)),
+      endBlock: Math.max(...transactions.map((t) => t.blockNumber)),
+      // transactionHashes: transactions.map((t) => t.txHash).join(", "),
+      // multiSwap: transactions.some((t) => t.multiSwap) ? "Yes" : "No",
     };
   }
 
@@ -129,16 +224,17 @@ class TransactionProcessor {
         TransactionProcessor.CONCURRENCY_LIMIT,
         async (txHash) => {
           try {
-            const txDetails = await getTransactionDetails(txHash);
+            const txDetails = await identifyNProcessTxns(txHash);
 
-            // TODO handle v3 txns & usd based txns
             if (!txDetails?.blockNumber) {
               console.log(
                 `[Details] Skipping ${txHash.slice(0, 8)} (missing details)`
               );
               return null;
             }
-
+            console.log(
+              `Processing  ${txHash.slice(0, 8)} - ${txDetails.blockNumber}`
+            );
             return txDetails;
           } catch (error) {
             console.log(
@@ -315,15 +411,16 @@ class TransactionProcessor {
       // Enrich transactions with details
       const txDetailsList = await this.runWithConcurrency(
         cleanedTxns,
-        100,
+        60,
         async (tx) => {
           try {
-            const txDetails = await getTransactionDetails(tx, true);
+            const txDetails = await identifyNProcessTxns(tx, true);
 
             if (!txDetails) {
               console.log(`Skipping ${tx} - missing details`);
               return null;
             }
+            console.log(`Processing ${tx} - ${txDetails.blockNumber}`);
 
             return {
               ...txDetails,
@@ -385,6 +482,165 @@ class TransactionProcessor {
   }
 
   /**
+   * Generates a WETH dataset for a given token address within a specified date range.
+   * Processes historical transaction data in batches, extracts relevant transaction details,
+   * organizes them into minute windows, and saves the results as CSV files.
+   *
+   * @async
+   * @param {string} tokenAddress - The address of the token to process.
+   * @param {string|Date} fromDate - The start date (inclusive) for transaction extraction (ISO string or Date object).
+   * @param {string|Date} toDate - The end date (inclusive) for transaction extraction (ISO string or Date object).
+   * @returns {Promise<{message: string, totalBatches: number, totalProcessed: number}>} - Summary of the dataset generation process.
+   * @throws {Error} Throws if date formats are invalid or if fromDate is after toDate.
+   */
+
+
+async  generateWethDataset(tokenAddress, fromDate, toDate) {
+  try {
+    const pMap = (await import("p-map")).default;
+    const fromDateObj = new Date(fromDate);
+    const toDateObj = new Date(toDate);
+
+    if (isNaN(fromDateObj.getTime()) || isNaN(toDateObj.getTime())) {
+      throw new Error(`Invalid date format.`);
+    }
+    if (fromDateObj > toDateObj) {
+      throw new Error(`fromDate cannot be after toDate`);
+    }
+
+    console.log(
+      `Processing historical data for ${tokenAddress} from ${fromDate} to ${toDate}`
+    );
+
+    const hashes = await this.extractTransactionHashes(
+      path.join(__dirname, "../resources/clean_data.csv")
+    );
+
+    if (hashes.length === 0) {
+      console.log("No hashes found.");
+      return [];
+    }
+
+    console.log(`Found ${hashes.length} unique transactions`);
+
+    const outputDir = path.join(__dirname, "..", "output", tokenAddress);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    let batchCount = 0;
+    let totalProcessed = 0;
+
+    for (let i = 0; i < hashes.length; i += TransactionProcessor.BATCH_SIZE) {
+      const batch = hashes.slice(i, i + TransactionProcessor.BATCH_SIZE);
+      const outputFilename = path.join(
+        outputDir,
+        `weth_batch_${batchCount + 1}.csv`
+      );
+
+      // Skip batch if already processed
+      if (fs.existsSync(outputFilename)) {
+        console.log(`⚠️ Skipping batch ${batchCount + 1} (already processed)`);
+        batchCount++;
+        continue;
+      }
+
+      console.log(
+        `Processing batch ${batchCount + 1} (${batch.length} txs)...`
+      );
+
+      const txDetailsList = await pMap(
+        batch,
+        async (tx) => {
+          try {
+            const txDetails = await identifyNProcessWethTxns(tx, true);
+            if (!txDetails) {
+              console.log(`Skipping ${tx} - missing details`);
+              return null;
+            }
+            totalProcessed++;
+            console.log(`Processed ${tx} - ${txDetails.type || "UNKNOWN"}`);
+            return {
+              ...txDetails,
+              txHash: tx,
+            };
+          } catch (error) {
+            console.error(`Failed to process ${tx}: ${error.message}`);
+            return null;
+          }
+        },
+        { concurrency: TransactionProcessor.CONCURRENCY }
+      );
+
+      const validTxDetails = txDetailsList
+        .filter(Boolean)
+        .sort((a, b) => a.timestamp - b.timestamp);
+
+      if (validTxDetails.length === 0) {
+        console.log(`Batch ${batchCount + 1} had no valid transactions.`);
+        batchCount++;
+        continue;
+      }
+
+      const windows = this.createMinuteWindows(
+        validTxDetails,
+        Math.floor(fromDateObj.getTime() / 1000),
+        Math.floor(toDateObj.getTime() / 1000)
+      );
+
+      const windowResults = await Promise.all(
+        windows.map(async ([windowStart, txns]) => {
+          if (txns.length > 0) {
+            return await this.buildMinWindowOfWeth(windowStart, txns);
+          }
+          return null;
+        })
+      );
+
+      const finalResults = windowResults.filter(Boolean).reverse();
+
+      await this.saveDatasetToCSV(finalResults, outputFilename);
+      console.log(`✅ Batch ${batchCount + 1} saved: ${outputFilename}`);
+
+      batchCount++;
+    }
+
+    console.log(
+      `🎉 Done. Processed ${totalProcessed} valid transactions across ${batchCount} batches.`
+    );
+
+    return {
+      message: "WETH dataset generation completed.",
+      totalBatches: batchCount,
+      totalProcessed,
+    };
+  } catch (err) {
+    console.error("Historical processing failed:", err);
+    throw err;
+  }
+}
+
+
+  createMinuteWindows(transactions, fromTimestamp, toTimestamp) {
+    const minuteMap = new Map();
+
+    let currentWindowStart = Math.floor(fromTimestamp / 60) * 60;
+    const endWindowStart = Math.floor(toTimestamp / 60) * 60;
+
+    while (currentWindowStart <= endWindowStart) {
+      minuteMap.set(currentWindowStart, []);
+      currentWindowStart += 60;
+    }
+
+    for (const tx of transactions) {
+      const windowStart = Math.floor(tx.timestamp / 60) * 60;
+      if (minuteMap.has(windowStart)) {
+        minuteMap.get(windowStart).push(tx);
+      }
+    }
+
+    return Array.from(minuteMap.entries());
+  }
+
+  /**
    * Creates hourly windows covering the entire date range
    */
   createHourlyWindows(transactions, fromTimestamp, toTimestamp) {
@@ -408,6 +664,68 @@ class TransactionProcessor {
     }
 
     return Array.from(hourlyMap.entries());
+  }
+
+  extractTransactionHashes(inputFile) {
+    return new Promise((resolve, reject) => {
+      // Resolve to absolute path
+      const absolutePath = path.resolve(inputFile);
+      console.log(`Looking for CSV at: ${absolutePath}`);
+
+      // Verify file exists first
+      if (!fs.existsSync(absolutePath)) {
+        return reject(new Error(`CSV file not found at: ${absolutePath}`));
+      }
+
+      const transactionHashes = new Set(); // Using Set to avoid duplicates
+
+      fs.createReadStream(absolutePath)
+        .pipe(csv())
+        .on("data", (row) => {
+          if (row.transaction_hash) {
+            transactionHashes.add(row.transaction_hash.trim());
+          }
+        })
+        .on("end", () => {
+          if (transactionHashes.size === 0) {
+            console.warn("Warning: No transaction hashes found in CSV");
+          }
+          resolve(Array.from(transactionHashes));
+        })
+        .on("error", (error) => {
+          reject(new Error(`CSV read error: ${error.message}`));
+        });
+    });
+  }
+
+  async saveDatasetToCSV(data, outputPath) {
+    try {
+     const fields = [
+  "minStartUTC",
+  "minEndUTC",
+  "startBlock",
+  "endBlock",
+  "totalTxns",
+  "buyCount",
+  "sellCount",
+  "activeAddressCount",
+  "lastTokenPrice",
+  "latestTokenPrice",
+  "avgTokenPrice",
+  "tokenVolume",
+  "tokenVolumeUSD",
+  "ethPrice",
+  "btcPrice",
+];
+
+      const opts = { fields };
+      const csv = parse(data, opts);
+
+      fs.writeFileSync(outputPath, csv);
+    } catch (err) {
+      console.error(`Failed to save dataset CSV: ${err.message}`);
+      throw err;
+    }
   }
 }
 

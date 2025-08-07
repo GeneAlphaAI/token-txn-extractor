@@ -3,6 +3,7 @@ const axios = require("axios");
 const Bottleneck = require("bottleneck");
 const fastCsv = require("fast-csv");
 const fs = require("fs");
+const path = require("path");
 const erc20ABI_Bytes32 = require("../resources/ABIs/erc20ABI-Bytes32.json");
 const erc20_ABI = require("../resources/ABIs/ERC20_ABI.json");
 // const Config = require("./config");
@@ -115,6 +116,8 @@ async function retrieveHistoricalPriceFromAPI(coinType, timestampValue) {
   }
 }
 
+
+
 async function fetchHistoricalPriceData(coinType, timestampValue) {
   const hourValue = Math.floor(timestampValue / 3600) * 3600;
   const storageKey = `${coinType}-${hourValue}`;
@@ -138,54 +141,78 @@ async function fetchHistoricalPriceData(coinType, timestampValue) {
 }
 
 function initializeTokenPricesFromFiles(
-  ethDataFile = " BYBIT_ETHUSDT_1h.csv",
-  btcDataFile = "btc_1h_data_2018_to_2025.csv"
+  ethDataFile = path.resolve(__dirname, "../resources/ETHUSD_1m_Binance.csv"),
+  btcDataFile = path.resolve(
+    __dirname,
+    "../resources/btc_1h_data_2018_to_2025.csv"
+  )
 ) {
-  const ethPriceData = fs
-    .readFileSync(ethDataFile, "utf-8")
-    .split("\n")
-    .slice(1);
-  for (const dataLine of ethPriceData) {
-    if (!dataLine.trim()) continue;
-
-    const [dateTime, , , , closingPrice] = dataLine.split(",");
-    const dateValue = new Date(`${dateTime.trim()} UTC`);
-    const hourTimestampValue = Math.floor(dateValue.getTime() / 1000);
-    tokenPriceHistoryETH.set(hourTimestampValue, parseFloat(closingPrice));
-  }
-  console.log(
-    `Loaded ${tokenPriceHistoryETH.size} ETH prices from ${ethDataFile}`
-  );
+  // Clear existing ETH data
+  tokenPriceHistoryETH.clear();
 
   return new Promise((resolve, reject) => {
-    fs.createReadStream(btcDataFile)
+    // Process minute-level ETH data using fast-csv
+    fs.createReadStream(ethDataFile)
       .pipe(fastCsv.parse({ headers: true, trim: true }))
       .on("data", (rowData) => {
-        const timestamp = new Date(rowData["Open time"]).getTime();
-        const hourValue = Math.floor(timestamp / 1000 / 3600) * 3600;
-        const closingPrice = parseFloat(rowData.Close);
-        tokenPriceHistoryBTC.set(hourValue, closingPrice);
+        try {
+          const timestamp = new Date(rowData["Open time"]).getTime();
+          const minuteTimestamp = Math.floor(timestamp / 1000); // Store exact second
+          const closingPrice = parseFloat(rowData.Close);
+
+          // Store minute-level price
+          tokenPriceHistoryETH.set(minuteTimestamp, closingPrice);
+        } catch (error) {
+          console.error("Error processing ETH minute data:", error);
+        }
       })
       .on("end", () => {
         console.log(
-          `Loaded ${tokenPriceHistoryBTC.size} BTC prices from ${btcDataFile}`
+          `Loaded ${tokenPriceHistoryETH.size} minute-level ETH prices`
         );
-        resolve();
+
+        // Process BTC data (unchanged)
+        fs.createReadStream(btcDataFile)
+          .pipe(fastCsv.parse({ headers: true, trim: true }))
+          .on("data", (rowData) => {
+            const timestamp = new Date(rowData["Open time"]).getTime();
+            const hourValue = Math.floor(timestamp / 1000 / 3600) * 3600;
+            const closingPrice = parseFloat(rowData.Close);
+            tokenPriceHistoryBTC.set(hourValue, closingPrice);
+          })
+          .on("end", () => {
+            console.log(`Loaded ${tokenPriceHistoryBTC.size} BTC prices`);
+            resolve();
+          })
+          .on("error", reject);
       })
       .on("error", reject);
   });
 }
 
 function retrieveETHPriceFromStorage(timestampValue) {
-  console.log("Checking ETH price storage for timestamp:", timestampValue);
-  const dateObj = new Date(timestampValue * 1000);
-  dateObj.setUTCMinutes(0, 0, 0);
-  const hourTimestampValue = Math.floor(dateObj.getTime() / 1000);
-  return tokenPriceHistoryETH.get(hourTimestampValue) || null;
+  // Try to get exact minute price first
+  const exactPrice = tokenPriceHistoryETH.get(timestampValue);
+
+  if (exactPrice !== undefined) return exactPrice;
+
+  // If no exact match, find the closest minute price within 60 seconds
+  let closestPrice = null;
+  let smallestDiff = Infinity;
+
+  for (const [ts, price] of tokenPriceHistoryETH) {
+    const diff = Math.abs(ts - timestampValue);
+    if (diff < smallestDiff && diff <= 60) {
+      // Within 1 minute window
+      smallestDiff = diff;
+      closestPrice = price;
+    }
+  }
+
+  return closestPrice;
 }
 
 function retrieveBTCPriceFromStorage(timestampValue) {
-  console.log("Checking ETH price storage for timestamp:", timestampValue);
   const dateObj = new Date(timestampValue * 1000);
   dateObj.setUTCMinutes(0, 0, 0);
   const hourTimestampValue = Math.floor(dateObj.getTime() / 1000);

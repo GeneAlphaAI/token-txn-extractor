@@ -1,6 +1,6 @@
 
 const errorMiddleware = require("../middleware/errorMiddleware");
-const { transactionRouter } = require("../routes");
+const { transactionRouter,datasetRouter } = require("../routes");
 const { CustomError } = require("../utils/appUtils");
 
 module.exports = function (app) {
@@ -9,6 +9,7 @@ module.exports = function (app) {
   });
   // Routes start
   app.use("/api/token/transactions", transactionRouter);
+  app.use("/api/token/dataset", datasetRouter);
 
   app.use("/docs", (req, res, next) =>
     res.redirect("https://documenter.getpostman.com/view/33425726/2sB34ikfPv")
