@@ -58,7 +58,7 @@ async function getPriceWithFallback(token, timestamp, historicalTxns) {
   if (timestamp <= 1751922000) {
     fallbackPrice =
       token === "ETH"
-        ? retrieveETHPriceFromStorage(timestamp)
+        ? retrieveETHPriceFromStorage(timestamp,true)
         : retrieveBTCPriceFromStorage(timestamp);
   }
 
