@@ -50,7 +50,6 @@ class TransactionProcessor {
       ? buySellTxns[buySellTxns.length - 1].btcCurrentPrice || 0
       : 0;
 
-
     const tokenPrices = buySellTxns.map((t) => {
       if (t?.ethreserve && t?.tokenReserve && ethPrice) {
         return (t.ethreserve * ethPrice) / t.tokenReserve;

@@ -67,6 +67,7 @@ async function getPriceWithFallback(token, timestamp, historicalTxns) {
   }
 
   return priceData;
+ 
 }
 
 async function fetchReserves(logList, tokenMeta) {
