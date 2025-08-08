@@ -16,7 +16,7 @@ const fs = require("fs");
 const path = require("path");
 const { parse } = require("json2csv"); 
 const csv = require('csv-parser');
-
+const { createObjectCsvWriter } = require("csv-writer"); 
 
 class TransactionProcessor {
   static CONCURRENCY_LIMIT = 70;
@@ -525,7 +525,7 @@ async generateWethDataset(tokenAddress, fromDate, toDate) {
 
     // Prepare output CSV writer (writes incrementally)
     const outputFilename = path.join(outputDir, `weth_dataset.csv`);
-    const { createObjectCsvWriter } = require("csv-writer");
+
     const csvWriter = createObjectCsvWriter({
       path: outputFilename,
       header: [
