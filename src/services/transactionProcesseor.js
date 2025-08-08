@@ -515,144 +515,123 @@ async generateWethDataset(tokenAddress, fromDate, toDate) {
     );
 
     const csvPath = path.join(__dirname, "../resources/clean_data.csv");
-
-    // Verify file exists first
     if (!fs.existsSync(csvPath)) {
       throw new Error(`CSV file not found at: ${csvPath}`);
     }
 
+    // Prepare output dir
     const outputDir = path.join(__dirname, "..", "output", tokenAddress);
     fs.mkdirSync(outputDir, { recursive: true });
+
+    // Prepare output CSV writer (writes incrementally)
+    const outputFilename = path.join(outputDir, `weth_dataset.csv`);
+    const { createObjectCsvWriter } = require("csv-writer");
+    const csvWriter = createObjectCsvWriter({
+      path: outputFilename,
+      header: [
+        { id: "minStartUTC", title: "minStartUTC" },
+        { id: "minEndUTC", title: "minEndUTC" },
+        { id: "startBlock", title: "startBlock" },
+        { id: "endBlock", title: "endBlock" },
+        { id: "totalTxns", title: "totalTxns" },
+        { id: "buyCount", title: "buyCount" },
+        { id: "sellCount", title: "sellCount" },
+        { id: "activeAddressCount", title: "activeAddressCount" },
+        { id: "lastTokenPrice", title: "lastTokenPrice" },
+        { id: "latestTokenPrice", title: "latestTokenPrice" },
+        { id: "avgTokenPrice", title: "avgTokenPrice" },
+        { id: "tokenVolume", title: "tokenVolume" },
+        { id: "tokenVolumeUSD", title: "tokenVolumeUSD" },
+        { id: "ethPrice", title: "ethPrice" },
+        { id: "btcPrice", title: "btcPrice" }
+      ],
+      append: false // overwrite if exists
+    });
 
     let batchCount = 0;
     let totalProcessed = 0;
     let batch = [];
 
-    // helper: process a full batch (keeps same logic as before)
+    const BATCH_SIZE = 1000; 
+    const CONCURRENCY = 100; 
+
+    // Process a batch and stream results directly to output CSV
     const processBatch = async (currentBatch) => {
-      if (!currentBatch || currentBatch.length === 0) return;
+      if (!currentBatch.length) return;
+      batchCount++;
 
-      const outputFilename = path.join(
-        outputDir,
-        `weth_batch_${batchCount + 1}.csv`
-      );
+      console.log(`Processing batch ${batchCount} (${currentBatch.length} txs)...`);
 
-      // Skip batch if already processed
-      if (fs.existsSync(outputFilename)) {
-        console.log(`⚠️ Skipping batch ${batchCount + 1} (already processed)`);
-        batchCount++;
-        return;
-      }
-
-      console.log(`Processing batch ${batchCount + 1} (${currentBatch.length} txs)...`);
-
-      // fetch tx details with existing logic
       const txDetailsList = await pMap(
         currentBatch,
         async (tx) => {
           try {
             const txDetails = await identifyNProcessWethTxns(tx, true);
-            if (!txDetails) {
-              // keep previous behavior
-              console.log(`Skipping ${tx} - missing details`);
-              return null;
-            }
+            if (!txDetails) return null;
             totalProcessed++;
-            console.log(`Processed ${tx} - ${txDetails.type || "UNKNOWN"}`);
-            return {
-              ...txDetails,
-              txHash: tx,
-            };
-          } catch (error) {
-            console.error(`Failed to process ${tx}: ${error.message}`);
+            return { ...txDetails, txHash: tx };
+          } catch (err) {
+            console.error(`Failed to process ${tx}: ${err.message}`);
             return null;
           }
         },
-        { concurrency: TransactionProcessor.CONCURRENCY }
+        { concurrency: CONCURRENCY }
       );
 
-      // keep only valid entries & sort
       const validTxDetails = txDetailsList
         .filter(Boolean)
         .sort((a, b) => a.timestamp - b.timestamp);
-
-      // explicitly drop txDetailsList reference so GC can free it
       txDetailsList.length = 0;
-
-      if (validTxDetails.length === 0) {
-        console.log(`Batch ${batchCount + 1} had no valid transactions.`);
-        batchCount++;
-        // free memory
-        validTxDetails.length = 0;
-        return;
-      }
 
       const windows = this.createMinuteWindows(
         validTxDetails,
         Math.floor(fromDateObj.getTime() / 1000),
         Math.floor(toDateObj.getTime() / 1000)
       );
-
-      // free validTxDetails asap
       validTxDetails.length = 0;
 
-      const windowResults = await Promise.all(
-        windows.map(async ([windowStart, txns]) => {
-          if (txns.length > 0) {
-            return await this.buildMinWindowOfWeth(windowStart, txns);
-          }
-          return null;
-        })
-      );
-
-      // free windows asap
+      // Build summaries and write them immediately
+      const summaries = [];
+      for (const [windowStart, txns] of windows) {
+        if (txns.length) {
+          const summary = await this.buildMinWindowOfWeth(windowStart, txns);
+          if (summary) summaries.push(summary);
+        }
+      }
       windows.length = 0;
 
-      const finalResults = windowResults.filter(Boolean).reverse();
+      if (summaries.length) {
+        await csvWriter.writeRecords(summaries); // append rows to CSV
+        summaries.length = 0;
+      }
 
-      // free windowResults asap
-      windowResults.length = 0;
-
-      await this.saveDatasetToCSV(finalResults, outputFilename);
-      console.log(`✅ Batch ${batchCount + 1} saved: ${outputFilename}`);
-
-      // free finalResults
-      finalResults.length = 0;
-
-      batchCount++;
+      console.log(`✅ Batch ${batchCount} written to CSV.`);
     };
 
-    // Stream the CSV and process in batches
+    // Stream the input CSV file in small chunks
     await new Promise((resolve, reject) => {
       const readStream = fs.createReadStream(csvPath);
       const parser = csv({ headers: false });
 
-      readStream.on("error", (err) => reject(new Error(`CSV readStream error: ${err.message}`)));
-      parser.on("error", (err) => reject(new Error(`CSV parse error: ${err.message}`)));
+      readStream.on("error", (err) => reject(err));
+      parser.on("error", (err) => reject(err));
 
       parser.on("data", async (row) => {
-        // row will be { '0': '0x...' } when headers:false
         const firstValue = row[0] || Object.values(row)[0];
         if (!firstValue) return;
 
         batch.push(firstValue.trim());
 
-        if (batch.length >= TransactionProcessor.BATCH_SIZE) {
-          // pause the stream while we process this batch
+        if (batch.length >= BATCH_SIZE) {
           readStream.pause();
           parser.pause();
-
-          // copy and clear current batch immediately so stream can continue after resume
           const currentBatch = batch;
           batch = [];
-
-          // process then resume
           try {
             await processBatch(currentBatch);
           } catch (err) {
             return reject(err);
           } finally {
-            // resume reading
             parser.resume();
             readStream.resume();
           }
@@ -660,25 +639,19 @@ async generateWethDataset(tokenAddress, fromDate, toDate) {
       });
 
       parser.on("end", async () => {
-        try {
-          // process any remaining items
-          if (batch.length > 0) {
-            const remaining = batch;
-            batch = [];
-            await processBatch(remaining);
-          }
-          resolve();
-        } catch (err) {
-          reject(err);
+        if (batch.length > 0) {
+          const remaining = batch;
+          batch = [];
+          await processBatch(remaining);
         }
+        resolve();
       });
 
-      // wire the stream
       readStream.pipe(parser);
     });
 
     console.log(
-      `🎉 Done. Processed ${totalProcessed} valid transactions across ${batchCount} batches.`
+      `🎉 Done. Processed ${totalProcessed} valid transactions in ${batchCount} batches.`
     );
 
     return {
@@ -691,6 +664,7 @@ async generateWethDataset(tokenAddress, fromDate, toDate) {
     throw err;
   }
 }
+
 
 
   createMinuteWindows(transactions, fromTimestamp, toTimestamp) {
