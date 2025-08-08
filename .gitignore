@@ -47,7 +47,11 @@ practice.js
 practice.json
 projectStatsSummary.json
 regaular-expression.js
-
+extract.js
+weth_txn_hashes.csv
+Eth_Txs.csv
+trim-inplace.js
+output
 agenda.js
 
 # NYC Test coverage

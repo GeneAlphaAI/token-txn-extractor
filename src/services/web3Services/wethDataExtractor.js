@@ -3,10 +3,8 @@ require("dotenv").config();
 
 const {
   blockchainHttpProvider,
-  referenceTokens,
   getUSDPriceForToken,
   fetchTokenInfo,
-  createPairTokenHandler,
   fetchBlockTime,
   retrieveBTCPriceFromStorage,
   retrieveETHPriceFromStorage,
@@ -21,7 +19,6 @@ const {
   getTokenTransferLog,
   getUSDTransferLog,
   decodeV2SwapDataHex,
-  decodeV2ReservesHex,
   getUSDMultiSwapTransferLog,
   getWBTCTransferLog,
   getPairTokens,
@@ -34,12 +31,18 @@ const logger = require("../../utils/logger");
 const { UNISWAP_V2_SWAP_TOPIC, UNISWAP_V3_SWAP_TOPIC, WETH_ADDRESS } =
   process.env;
 
-function getTypeOfV3Transaction(primaryAmount, swappedAmount) {
-  return primaryAmount === swappedAmount ? "SELL" : "BUY";
+function getTypeOfWethV3Transaction(primaryAmount, swappedAmount) {
+  // return primaryAmount === swappedAmount ? "SELL" : "BUY";
+
+  // if tracking WETH trades, we will reverse the logic
+  return primaryAmount === swappedAmount ? "BUY" : "SELL";
 }
 
-function getTypeOfV2Transaction(primaryAmount, swappedAmount) {
-  return primaryAmount === swappedAmount ? "BUY" : "SELL";
+function getTypeOfWethV2Transaction(primaryAmount, swappedAmount) {
+  // return primaryAmount === swappedAmount ? "BUY" : "SELL";
+
+  // if tracking WETH trades, we will reverse the logic
+  return primaryAmount === swappedAmount ? "SELL" : "BUY";
 }
 
 async function getPriceWithFallback(token, timestamp, historicalTxns) {
@@ -55,7 +58,7 @@ async function getPriceWithFallback(token, timestamp, historicalTxns) {
   if (timestamp <= 1751922000) {
     fallbackPrice =
       token === "ETH"
-        ? retrieveETHPriceFromStorage(timestamp)
+        ? retrieveETHPriceFromStorage(timestamp,true)
         : retrieveBTCPriceFromStorage(timestamp);
   }
 
@@ -67,44 +70,13 @@ async function getPriceWithFallback(token, timestamp, historicalTxns) {
   }
 
   return priceData;
- 
-}
-
-async function fetchReserves(logList, tokenMeta) {
-  for (const log of logList) {
-    if (
-      log.topics?.[0] ===
-      "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1"
-    ) {
-      const reserveData = decodeV2ReservesHex(log);
-      const pair = createPairTokenHandler(v2PollABI, log.address);
-      const [t0, t1] = [
-        await pair.methods.token0().call(),
-        await pair.methods.token1().call(),
-      ].map((a) => a.toLowerCase());
-      if (![t0, t1].includes(WETH_ADDRESS.toLowerCase())) continue;
-
-      const [ethRes, tokRes] =
-        t0 === WETH_ADDRESS.toLowerCase()
-          ? [
-              reserveData.reserve0 / 1e18,
-              reserveData.reserve1 / 10 ** tokenMeta.dec,
-            ]
-          : [
-              reserveData.reserve1 / 1e18,
-              reserveData.reserve0 / 10 ** tokenMeta.dec,
-            ];
-      return { ethRes, tokRes };
-    }
-  }
-  return {};
 }
 
 function toTokenAmount(value, decimals) {
   return value / 10 ** decimals;
 }
 
-async function identifyNProcessTxns(txHash, historicalTxns = false) {
+async function identifyNProcessWethTxns(txHash, historicalTxns = false) {
   try {
     const receipt = await blockchainHttpProvider.eth.getTransactionReceipt(
       txHash
@@ -186,7 +158,6 @@ async function getTransactionDetails(
   try {
     const txHash = receiptObj.transactionHash;
     const blockNumber = Number(receiptObj.blockNumber);
-    const logList = receiptObj.logs;
     let v2SwapLog, v3SwapLog;
     if (
       swapLog.topics[0] === Config.UNISWAP_V2_SWAP_TOPIC &&
@@ -222,39 +193,33 @@ async function getTransactionDetails(
         );
         if (!tokenTx.dstLog) return null;
 
-        const [usdMeta, tokenMeta, ethPrice, btcPrice] = await Promise.all([
-          fetchTokenInfo(erc20ABI, usdTransfer.dstLog.address),
-          fetchTokenInfo(erc20ABI, tokenTx.dstLog.address),
+        const [usdMeta, ethMeta, ethPrice, btcPrice] = await Promise.all([
+          fetchTokenInfo(erc20ABI, usdTransfer?.dstLog?.address),
+          fetchTokenInfo(erc20ABI, ethTransfer?.dstLog?.address),
           getPriceWithFallback("ETH", timestamp, historicalTxns),
           getPriceWithFallback("BTC", timestamp, historicalTxns),
         ]);
 
         const usdAmt = toTokenAmount(usdTransfer.value, usdMeta.dec);
-        const tokenAmount = toTokenAmount(tokenTx.tokenValue, tokenMeta.dec);
         const ethAmount = ethTransfer
           ? toTokenAmount(ethTransfer.value, 18)
           : 0;
-        const reserves = await fetchReserves(logList, tokenMeta);
 
         return {
-          type: getTypeOfV3Transaction(
+          type: getTypeOfWethV3Transaction(
             usdTransfer.value || ethTransfer.value,
             parsed.amount0
           ),
           txHash: txHash,
           token: tokenTx.dstLog.address,
-          name: tokenMeta.name,
-          symbol: tokenMeta.symbol,
-          decimals: tokenMeta.dec,
-          totalSupply: tokenMeta.totalSupply,
-          tokenValue: tokenAmount,
+          name: ethMeta.name,
+          symbol: ethMeta.symbol,
+          decimals: ethMeta.dec,
+          totalSupply: ethMeta.totalSupply,
           ethAmount: ethAmount || 0,
           usdValue: usdAmt || ethAmount * ethPrice,
-          tokenPriceInUsd: (usdAmt || ethAmount * ethPrice) / tokenAmount,
           blockNumber: blockNumber,
           multiSwap: multiSwap,
-          ethreserve: reserves.ethRes,
-          tokenReserve: reserves.tokRes,
           ethCurrentPrice: ethPrice,
           btcCurrentPrice: btcPrice,
           timestamp: timestamp,
@@ -302,39 +267,37 @@ async function getTransactionDetails(
         );
         if (!tokenTx.dstLog) return null;
 
-        const [usdMeta, tokenMeta, ethPrice, btcPrice] = await Promise.all([
-          fetchTokenInfo(erc20ABI, usdTransfer.dstLog.address),
-          fetchTokenInfo(erc20ABI, tokenTx.dstLog.address),
+        const [usdMeta, ethMeta, ethPrice, btcPrice] = await Promise.all([
+          fetchTokenInfo(erc20ABI, usdTransfer?.dstLog?.address),
+          fetchTokenInfo(erc20ABI, ethTransfer?.dstLog?.address),
           getPriceWithFallback("ETH", timestamp, historicalTxns),
           getPriceWithFallback("BTC", timestamp, historicalTxns),
         ]);
 
         const usdAmt = toTokenAmount(usdTransfer.value, usdMeta.dec);
-        const tokenAmount = toTokenAmount(tokenTx.tokenValue, tokenMeta.dec);
         const ethAmount = ethTransfer
           ? toTokenAmount(ethTransfer.value, 18)
           : 0;
-        const reserves = await fetchReserves(logList, tokenMeta);
 
         return {
-          type: getTypeOfV2Transaction(
+          type: getTypeOfWethV2Transaction(
             usdTransfer.value || ethTransfer.value,
             parsed.amount0
           ),
           txHash: txHash,
           token: tokenTx.dstLog.address,
-          name: tokenMeta.name,
-          symbol: tokenMeta.symbol,
-          decimals: tokenMeta.dec,
-          totalSupply: tokenMeta.totalSupply,
-          tokenValue: tokenAmount,
+          name: ethMeta.name,
+          symbol: ethMeta.symbol,
+          decimals: ethMeta.dec,
+          totalSupply: ethMeta.totalSupply,
+          // tokenValue: tokenAmount,
           ethAmount: ethAmount || 0,
           usdValue: usdAmt || ethAmount * ethPrice,
-          tokenPriceInUsd: (usdAmt || ethAmount * ethPrice) / tokenAmount,
+          // tokenPriceInUsd: (usdAmt || ethAmount * ethPrice) / tokenAmount,
           blockNumber: blockNumber,
           multiSwap: multiSwap,
-          ethreserve: reserves.ethRes,
-          tokenReserve: reserves.tokRes,
+          // ethreserve: reserves.ethRes,
+          // tokenReserve: reserves.tokRes,
           ethCurrentPrice: ethPrice,
           btcCurrentPrice: btcPrice,
           timestamp: timestamp,
@@ -367,8 +330,7 @@ async function getTransactionDetails(
 }
 
 module.exports = {
-  getTransactionDetails,
-  identifyNProcessTxns,
-  getTypeOfV3Transaction,
-  getTypeOfV2Transaction,
+  identifyNProcessWethTxns,
+  getTypeOfWethV3Transaction,
+  getTypeOfWethV2Transaction,
 };
