@@ -20,8 +20,8 @@ const csv = require('csv-parser');
 
 class TransactionProcessor {
   static CONCURRENCY_LIMIT = 70;
-  static BATCH_SIZE = 10000;
-  static CONCURRENCY = 2000;
+  static BATCH_SIZE = 1000;
+  static CONCURRENCY = 100;
 
   constructor() {}
 
