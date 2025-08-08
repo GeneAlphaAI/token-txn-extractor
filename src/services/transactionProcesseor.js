@@ -681,13 +681,15 @@ async  generateWethDataset(tokenAddress, fromDate, toDate) {
 
       const transactionHashes = new Set(); // Using Set to avoid duplicates
 
-      fs.createReadStream(absolutePath)
-        .pipe(csv())
-        .on("data", (row) => {
-          if (row.transaction_hash) {
-            transactionHashes.add(row.transaction_hash.trim());
-          }
-        })
+   fs.createReadStream(absolutePath)
+      .pipe(csv({ headers: false })) // Don't auto-parse headers
+      .on("data", (row) => {
+        // When headers:false, row will be like { '0': '0x...' }
+        const firstValue = row[0] || Object.values(row)[0];
+        if (firstValue) {
+          transactionHashes.add(firstValue.trim());
+        }
+      })
         .on("end", () => {
           if (transactionHashes.size === 0) {
             console.warn("Warning: No transaction hashes found in CSV");
