@@ -1,6 +1,4 @@
-const {
-  identifyNProcessTxns,
-} = require("./web3Services/txnDataExtractor");
+const { identifyNProcessTxns } = require("./web3Services/txnDataExtractor");
 const {
   fetchBlockTime,
   filterUniqueTransactions,
@@ -14,14 +12,13 @@ const {
 } = require("./web3Services/wethDataExtractor");
 const fs = require("fs");
 const path = require("path");
-const { parse } = require("json2csv"); 
-const csv = require('csv-parser');
-const { createObjectCsvWriter } = require("csv-writer"); 
+const { parse } = require("json2csv");
+const csv = require("csv-parser");
 
 class TransactionProcessor {
   static CONCURRENCY_LIMIT = 70;
-  static BATCH_SIZE = 10000;
-  static CONCURRENCY = 2000;
+  static BATCH_SIZE = 5000;
+  static CONCURRENCY = 50;
 
   constructor() {}
 
@@ -496,176 +493,141 @@ class TransactionProcessor {
    * @throws {Error} Throws if date formats are invalid or if fromDate is after toDate.
    */
 
+  async generateWethDataset(tokenAddress, fromDate, toDate) {
+    try {
+      const pMap = (await import("p-map")).default;
+      const fromDateObj = new Date(fromDate);
+      const toDateObj = new Date(toDate);
 
-async generateWethDataset(tokenAddress, fromDate, toDate) {
-  try {
-    const pMap = (await import("p-map")).default;
-    const fromDateObj = new Date(fromDate);
-    const toDateObj = new Date(toDate);
+      if (isNaN(fromDateObj.getTime()) || isNaN(toDateObj.getTime())) {
+        throw new Error(`Invalid date format.`);
+      }
+      if (fromDateObj > toDateObj) {
+        throw new Error(`fromDate cannot be after toDate`);
+      }
 
-    if (isNaN(fromDateObj.getTime()) || isNaN(toDateObj.getTime())) {
-      throw new Error(`Invalid date format.`);
-    }
-    if (fromDateObj > toDateObj) {
-      throw new Error(`fromDate cannot be after toDate`);
-    }
+      console.log(
+        `Processing historical data for ${tokenAddress} from ${fromDate} to ${toDate}`
+      );
 
-    console.log(
-      `Processing historical data for ${tokenAddress} from ${fromDate} to ${toDate}`
-    );
+      const hashes = await this.extractTransactionHashes(
+        path.join(__dirname, "../resources/clean_data.csv")
+      );
 
-    const csvPath = path.join(__dirname, "../resources/clean_data.csv");
-    if (!fs.existsSync(csvPath)) {
-      throw new Error(`CSV file not found at: ${csvPath}`);
-    }
+      if (hashes.length === 0) {
+        console.log("No hashes found.");
+        return [];
+      }
+      console.log(`Found ${hashes.length} unique transactions`);
+      const outputDir = path.join(__dirname, "..", "output", tokenAddress);
+      fs.mkdirSync(outputDir, { recursive: true });
 
-    // Prepare output dir
-    const outputDir = path.join(__dirname, "..", "output", tokenAddress);
-    fs.mkdirSync(outputDir, { recursive: true });
+      let batchCount = 0;
+      let totalProcessed = 0;
+      for (let i = 0; i < hashes.length; i += TransactionProcessor.BATCH_SIZE) {
+        const batch = hashes.slice(i, i + TransactionProcessor.BATCH_SIZE);
 
-    // Prepare output CSV writer (writes incrementally)
-    const outputFilename = path.join(outputDir, `weth_dataset.csv`);
+        const outputFilename = path.join(
+          outputDir,
+          `weth_batch_${batchCount + 1}.csv`
+        );
 
-    const csvWriter = createObjectCsvWriter({
-      path: outputFilename,
-      header: [
-        { id: "minStartUTC", title: "minStartUTC" },
-        { id: "minEndUTC", title: "minEndUTC" },
-        { id: "startBlock", title: "startBlock" },
-        { id: "endBlock", title: "endBlock" },
-        { id: "totalTxns", title: "totalTxns" },
-        { id: "buyCount", title: "buyCount" },
-        { id: "sellCount", title: "sellCount" },
-        { id: "activeAddressCount", title: "activeAddressCount" },
-        { id: "lastTokenPrice", title: "lastTokenPrice" },
-        { id: "latestTokenPrice", title: "latestTokenPrice" },
-        { id: "avgTokenPrice", title: "avgTokenPrice" },
-        { id: "tokenVolume", title: "tokenVolume" },
-        { id: "tokenVolumeUSD", title: "tokenVolumeUSD" },
-        { id: "ethPrice", title: "ethPrice" },
-        { id: "btcPrice", title: "btcPrice" }
-      ],
-      append: false // overwrite if exists
-    });
+        // Skip batch if already processed
+        if (fs.existsSync(outputFilename)) {
+          console.log(
+            `⚠️ Skipping batch ${batchCount + 1} (already processed)`
+          );
+          batchCount++;
+          continue;
+        }
 
-    let batchCount = 0;
-    let totalProcessed = 0;
-    let batch = [];
+        console.log(`Processing batch ${batchCount + 1} txs...`);
 
-    const BATCH_SIZE = 1000; 
-    const CONCURRENCY = 100; 
+        // fetch tx details with existing logic
+        const txDetailsList = await pMap(
+          batch,
+          async (tx) => {
+            try {
+              const txDetails = await identifyNProcessWethTxns(tx, true);
+              if (!txDetails) {
+                // keep previous behavior
+                console.log(`Skipping ${tx} - missing details`);
+                return null;
+              }
+              totalProcessed++;
+              console.log(`Processed ${tx} - ${txDetails.type || "UNKNOWN"}`);
+              return {
+                ...txDetails,
+                txHash: tx,
+              };
+            } catch (error) {
+              console.error(`Failed to process ${tx}: ${error.message}`);
+              return null;
+            }
+          },
+          { concurrency: TransactionProcessor.CONCURRENCY }
+        );
 
-    // Process a batch and stream results directly to output CSV
-    const processBatch = async (currentBatch) => {
-      if (!currentBatch.length) return;
-      batchCount++;
+        // keep only valid entries & sort
+        const validTxDetails = txDetailsList
+          .filter(Boolean)
+          .sort((a, b) => a.timestamp - b.timestamp);
 
-      console.log(`Processing batch ${batchCount} (${currentBatch.length} txs)...`);
+        if (validTxDetails.length === 0) {
+          console.log(`Batch ${batchCount + 1} had no valid transactions.`);
+          batchCount++;
+          continue;
+        }
 
-      const txDetailsList = await pMap(
-        currentBatch,
-        async (tx) => {
-          try {
-            const txDetails = await identifyNProcessWethTxns(tx, true);
-            if (!txDetails) return null;
-            totalProcessed++;
-            return { ...txDetails, txHash: tx };
-          } catch (err) {
-            console.error(`Failed to process ${tx}: ${err.message}`);
+        const windows = this.createMinuteWindows(
+          validTxDetails,
+          Math.floor(fromDateObj.getTime() / 1000),
+          Math.floor(toDateObj.getTime() / 1000)
+        );
+
+        // // free validTxDetails asap
+        // validTxDetails.length = 0;
+
+        const windowResults = await Promise.all(
+          windows.map(async ([windowStart, txns]) => {
+            if (txns.length > 0) {
+              return await this.buildMinWindowOfWeth(windowStart, txns);
+            }
             return null;
-          }
-        },
-        { concurrency: CONCURRENCY }
-      );
+          })
+        );
 
-      const validTxDetails = txDetailsList
-        .filter(Boolean)
-        .sort((a, b) => a.timestamp - b.timestamp);
-      txDetailsList.length = 0;
+        // // free windows asap
+        // windows.length = 0;
 
-      const windows = this.createMinuteWindows(
-        validTxDetails,
-        Math.floor(fromDateObj.getTime() / 1000),
-        Math.floor(toDateObj.getTime() / 1000)
-      );
-      validTxDetails.length = 0;
+        const finalResults = windowResults.filter(Boolean).reverse();
 
-      // Build summaries and write them immediately
-      const summaries = [];
-      for (const [windowStart, txns] of windows) {
-        if (txns.length) {
-          const summary = await this.buildMinWindowOfWeth(windowStart, txns);
-          if (summary) summaries.push(summary);
-        }
-      }
-      windows.length = 0;
+        // // free windowResults asap
+        // windowResults.length = 0;
 
-      if (summaries.length) {
-        await csvWriter.writeRecords(summaries); // append rows to CSV
-        summaries.length = 0;
+        await this.saveDatasetToCSV(finalResults, outputFilename);
+        console.log(`✅ Batch ${batchCount + 1} saved: ${outputFilename}`);
+
+        // // free finalResults
+        // finalResults.length = 0;
+
+        batchCount++;
       }
 
-      console.log(`✅ Batch ${batchCount} written to CSV.`);
-    };
+      console.log(
+        `🎉 Done. Processed ${totalProcessed} valid transactions across ${batchCount} batches.`
+      );
 
-    // Stream the input CSV file in small chunks
-    await new Promise((resolve, reject) => {
-      const readStream = fs.createReadStream(csvPath);
-      const parser = csv({ headers: false });
-
-      readStream.on("error", (err) => reject(err));
-      parser.on("error", (err) => reject(err));
-
-      parser.on("data", async (row) => {
-        const firstValue = row[0] || Object.values(row)[0];
-        if (!firstValue) return;
-
-        batch.push(firstValue.trim());
-
-        if (batch.length >= BATCH_SIZE) {
-          readStream.pause();
-          parser.pause();
-          const currentBatch = batch;
-          batch = [];
-          try {
-            await processBatch(currentBatch);
-          } catch (err) {
-            return reject(err);
-          } finally {
-            parser.resume();
-            readStream.resume();
-          }
-        }
-      });
-
-      parser.on("end", async () => {
-        if (batch.length > 0) {
-          const remaining = batch;
-          batch = [];
-          await processBatch(remaining);
-        }
-        resolve();
-      });
-
-      readStream.pipe(parser);
-    });
-
-    console.log(
-      `🎉 Done. Processed ${totalProcessed} valid transactions in ${batchCount} batches.`
-    );
-
-    return {
-      message: "WETH dataset generation completed.",
-      totalBatches: batchCount,
-      totalProcessed,
-    };
-  } catch (err) {
-    console.error("Historical processing failed:", err);
-    throw err;
+      return {
+        message: "WETH dataset generation completed.",
+        totalBatches: batchCount,
+        totalProcessed,
+      };
+    } catch (err) {
+      console.error("Historical processing failed:", err);
+      throw err;
+    }
   }
-}
-
-
 
   createMinuteWindows(transactions, fromTimestamp, toTimestamp) {
     const minuteMap = new Map();
@@ -727,15 +689,15 @@ async generateWethDataset(tokenAddress, fromDate, toDate) {
 
       const transactionHashes = new Set(); // Using Set to avoid duplicates
 
-   fs.createReadStream(absolutePath)
-      .pipe(csv({ headers: false })) // Don't auto-parse headers
-      .on("data", (row) => {
-        // When headers:false, row will be like { '0': '0x...' }
-        const firstValue = row[0] || Object.values(row)[0];
-        if (firstValue) {
-          transactionHashes.add(firstValue.trim());
-        }
-      })
+      fs.createReadStream(absolutePath)
+        .pipe(csv({ headers: false })) // Don't auto-parse headers
+        .on("data", (row) => {
+          // When headers:false, row will be like { '0': '0x...' }
+          const firstValue = row[0] || Object.values(row)[0];
+          if (firstValue) {
+            transactionHashes.add(firstValue.trim());
+          }
+        })
         .on("end", () => {
           if (transactionHashes.size === 0) {
             console.warn("Warning: No transaction hashes found in CSV");
@@ -750,23 +712,23 @@ async generateWethDataset(tokenAddress, fromDate, toDate) {
 
   async saveDatasetToCSV(data, outputPath) {
     try {
-     const fields = [
-  "minStartUTC",
-  "minEndUTC",
-  "startBlock",
-  "endBlock",
-  "totalTxns",
-  "buyCount",
-  "sellCount",
-  "activeAddressCount",
-  "lastTokenPrice",
-  "latestTokenPrice",
-  "avgTokenPrice",
-  "tokenVolume",
-  "tokenVolumeUSD",
-  "ethPrice",
-  "btcPrice",
-];
+      const fields = [
+        "minStartUTC",
+        "minEndUTC",
+        "startBlock",
+        "endBlock",
+        "totalTxns",
+        "buyCount",
+        "sellCount",
+        "activeAddressCount",
+        "lastTokenPrice",
+        "latestTokenPrice",
+        "avgTokenPrice",
+        "tokenVolume",
+        "tokenVolumeUSD",
+        "ethPrice",
+        "btcPrice",
+      ];
 
       const opts = { fields };
       const csv = parse(data, opts);

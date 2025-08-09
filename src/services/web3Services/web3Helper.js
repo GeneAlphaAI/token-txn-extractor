@@ -336,6 +336,37 @@ async function getPairTokens(poolAddress) {
   }
 }
 
+async function getWethPair(poolAddress) {
+  const pool = createPairTokenHandler(v2PollABI, poolAddress);
+
+  let baseToken, quoteToken;
+  try {
+    let [token0, token1] = await Promise.all([
+      pool.methods.token0().call(),
+      pool.methods.token1().call(),
+    ]);
+
+    token0 = token0.toLowerCase();
+    token1 = token1.toLowerCase();
+
+   if (WETH_ADDRESS.toLowerCase() === token0) {
+      quoteToken = token0;
+      baseToken = token1;
+    } else if (WETH_ADDRESS.toLowerCase() === token1) {
+      baseToken = token0;
+      quoteToken = token1;
+    } else {
+      // Bypassing ERC20 <--> ERC20 pair tokens
+      logger.warn(`Pool ${poolAddress} does not contain a quote token.`);
+      return { poolAddress, baseToken: null, quoteToken: null };
+    }
+    return { poolAddress, baseToken, quoteToken };
+  } catch (error) {
+    logger.error(error);
+    return { poolAddress, baseToken: null, quoteToken: null };
+  }
+}
+
 module.exports = {
   decodeV3SwapDataHex,
   decodeV2SwapDataHex,
@@ -351,6 +382,7 @@ module.exports = {
   getSpotPrice,
   getUSDMultiSwapTransferLog,
   getWBTCTransferLog,
-  getPairTokens
+  getPairTokens,
+  getWethPair
   
 };

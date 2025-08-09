@@ -21,7 +21,7 @@ const {
   decodeV2SwapDataHex,
   getUSDMultiSwapTransferLog,
   getWBTCTransferLog,
-  getPairTokens,
+  getWethPair,
 } = require("./web3Helper");
 
 const { deserializeObject } = require("../../utils/appUtils");
@@ -103,7 +103,7 @@ async function identifyNProcessWethTxns(txHash, historicalTxns = false) {
       );
       if (allSwapLogs.length === 0) return;
       else if (allSwapLogs.length === 1) {
-        const pair = await getPairTokens(allSwapLogs[0].address);
+        const pair = await getWethPair(allSwapLogs[0].address);
         if (pair.baseToken && pair.quoteToken) {
           return await getTransactionDetails(
             receipt,
@@ -120,7 +120,7 @@ async function identifyNProcessWethTxns(txHash, historicalTxns = false) {
         const swapLogsWithPairs = await Promise.all(
           allSwapLogs.map(async (log) => ({
             log,
-            pair: await getPairTokens(log.address),
+            pair: await getWethPair(log.address),
           }))
         );
 
