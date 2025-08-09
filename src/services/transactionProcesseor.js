@@ -18,7 +18,7 @@ const csv = require("csv-parser");
 class TransactionProcessor {
   static CONCURRENCY_LIMIT = 70;
   static BATCH_SIZE = 5000;
-  static CONCURRENCY = 50;
+  static CONCURRENCY = 25;
 
   constructor() {}
 
@@ -492,74 +492,66 @@ class TransactionProcessor {
    * @returns {Promise<{message: string, totalBatches: number, totalProcessed: number}>} - Summary of the dataset generation process.
    * @throws {Error} Throws if date formats are invalid or if fromDate is after toDate.
    */
+async generateWethDataset(tokenAddress, fromDate, toDate) {
+  try {
+    const pMap = (await import("p-map")).default;
+    const fromDateObj = new Date(fromDate);
+    const toDateObj = new Date(toDate);
 
-  async generateWethDataset(tokenAddress, fromDate, toDate) {
-    try {
-      const pMap = (await import("p-map")).default;
-      const fromDateObj = new Date(fromDate);
-      const toDateObj = new Date(toDate);
+    if (isNaN(fromDateObj.getTime()) || isNaN(toDateObj.getTime())) {
+      throw new Error(`Invalid date format.`);
+    }
+    if (fromDateObj > toDateObj) {
+      throw new Error(`fromDate cannot be after toDate`);
+    }
 
-      if (isNaN(fromDateObj.getTime()) || isNaN(toDateObj.getTime())) {
-        throw new Error(`Invalid date format.`);
+    console.log(`Processing historical data for ${tokenAddress} from ${fromDate} to ${toDate}`);
+
+    const hashes = await this.extractTransactionHashes(
+      path.join(__dirname, "../resources/clean_data.csv")
+    );
+
+    if (hashes.length === 0) {
+      console.log("No hashes found.");
+      return [];
+    }
+    console.log(`Found ${hashes.length} unique transactions`);
+
+    const outputDir = path.join(__dirname, "..", "output", tokenAddress);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    let batchCount = 0;
+    let totalProcessed = 0;
+    const innerChunkSize = 500;
+
+    for (let i = 0; i < hashes.length; i += TransactionProcessor.BATCH_SIZE) {
+      const batch = hashes.slice(i, i + TransactionProcessor.BATCH_SIZE);
+
+      const outputFilename = path.join(outputDir, `weth_batch_${batchCount + 1}.csv`);
+      if (fs.existsSync(outputFilename)) {
+        console.log(`⚠️ Skipping batch ${batchCount + 1} (already processed)`);
+        batchCount++;
+        continue;
       }
-      if (fromDateObj > toDateObj) {
-        throw new Error(`fromDate cannot be after toDate`);
-      }
 
-      console.log(
-        `Processing historical data for ${tokenAddress} from ${fromDate} to ${toDate}`
-      );
+      console.log(`Processing batch ${batchCount + 1} txs...`);
+      fs.writeFileSync(outputFilename, "hash,timestamp,from,to,value\n");
 
-      const hashes = await this.extractTransactionHashes(
-        path.join(__dirname, "../resources/clean_data.csv")
-      );
+      for (let j = 0; j < batch.length; j += innerChunkSize) {
+        const chunk = batch.slice(j, j + innerChunkSize);
 
-      if (hashes.length === 0) {
-        console.log("No hashes found.");
-        return [];
-      }
-      console.log(`Found ${hashes.length} unique transactions`);
-      const outputDir = path.join(__dirname, "..", "output", tokenAddress);
-      fs.mkdirSync(outputDir, { recursive: true });
-
-      let batchCount = 0;
-      let totalProcessed = 0;
-      for (let i = 0; i < hashes.length; i += TransactionProcessor.BATCH_SIZE) {
-        const batch = hashes.slice(i, i + TransactionProcessor.BATCH_SIZE);
-
-        const outputFilename = path.join(
-          outputDir,
-          `weth_batch_${batchCount + 1}.csv`
-        );
-
-        // Skip batch if already processed
-        if (fs.existsSync(outputFilename)) {
-          console.log(
-            `⚠️ Skipping batch ${batchCount + 1} (already processed)`
-          );
-          batchCount++;
-          continue;
-        }
-
-        console.log(`Processing batch ${batchCount + 1} txs...`);
-
-        // fetch tx details with existing logic
-        const txDetailsList = await pMap(
-          batch,
+        let validTxDetails = await pMap(
+          chunk,
           async (tx) => {
             try {
               const txDetails = await identifyNProcessWethTxns(tx, true);
               if (!txDetails) {
-                // keep previous behavior
                 console.log(`Skipping ${tx} - missing details`);
                 return null;
               }
               totalProcessed++;
               console.log(`Processed ${tx} - ${txDetails.type || "UNKNOWN"}`);
-              return {
-                ...txDetails,
-                txHash: tx,
-              };
+              return { ...txDetails, txHash: tx };
             } catch (error) {
               console.error(`Failed to process ${tx}: ${error.message}`);
               return null;
@@ -568,66 +560,63 @@ class TransactionProcessor {
           { concurrency: TransactionProcessor.CONCURRENCY }
         );
 
-        // keep only valid entries & sort
-        const validTxDetails = txDetailsList
+        validTxDetails = validTxDetails
           .filter(Boolean)
           .sort((a, b) => a.timestamp - b.timestamp);
 
-        if (validTxDetails.length === 0) {
-          console.log(`Batch ${batchCount + 1} had no valid transactions.`);
-          batchCount++;
-          continue;
+        if (validTxDetails.length > 0) {
+          let windows = this.createMinuteWindows(
+            validTxDetails,
+            Math.floor(fromDateObj.getTime() / 1000),
+            Math.floor(toDateObj.getTime() / 1000)
+          );
+
+          let windowResults = await Promise.all(
+            windows.map(async ([windowStart, txns]) => {
+              if (txns.length > 0) {
+                return await this.buildMinWindowOfWeth(windowStart, txns);
+              }
+              return null;
+            })
+          );
+
+          let finalResults = windowResults.filter(Boolean).reverse();
+
+          await this.saveDatasetToCSV(finalResults, outputFilename);
+
+          // clear memory aggressively
+          validTxDetails.length = 0;
+          windows.length = 0;
+          windowResults.length = 0;
+          finalResults.length = 0;
+          validTxDetails = null;
+          windows = null;
+          windowResults = null;
+          finalResults = null;
         }
 
-        const windows = this.createMinuteWindows(
-          validTxDetails,
-          Math.floor(fromDateObj.getTime() / 1000),
-          Math.floor(toDateObj.getTime() / 1000)
-        );
-
-        // // free validTxDetails asap
-        // validTxDetails.length = 0;
-
-        const windowResults = await Promise.all(
-          windows.map(async ([windowStart, txns]) => {
-            if (txns.length > 0) {
-              return await this.buildMinWindowOfWeth(windowStart, txns);
-            }
-            return null;
-          })
-        );
-
-        // // free windows asap
-        // windows.length = 0;
-
-        const finalResults = windowResults.filter(Boolean).reverse();
-
-        // // free windowResults asap
-        // windowResults.length = 0;
-
-        await this.saveDatasetToCSV(finalResults, outputFilename);
-        console.log(`✅ Batch ${batchCount + 1} saved: ${outputFilename}`);
-
-        // // free finalResults
-        // finalResults.length = 0;
-
-        batchCount++;
+        chunk.length = 0;
+        if (global.gc) global.gc();
       }
 
-      console.log(
-        `🎉 Done. Processed ${totalProcessed} valid transactions across ${batchCount} batches.`
-      );
-
-      return {
-        message: "WETH dataset generation completed.",
-        totalBatches: batchCount,
-        totalProcessed,
-      };
-    } catch (err) {
-      console.error("Historical processing failed:", err);
-      throw err;
+      batch.length = 0;
+      batchCount++;
+      if (global.gc) global.gc();
     }
+
+    console.log(`🎉 Done. Processed ${totalProcessed} valid transactions across ${batchCount} batches.`);
+
+    return {
+      message: "WETH dataset generation completed.",
+      totalBatches: batchCount,
+      totalProcessed,
+    };
+  } catch (err) {
+    console.error("Historical processing failed:", err);
+    throw err;
   }
+}
+
 
   createMinuteWindows(transactions, fromTimestamp, toTimestamp) {
     const minuteMap = new Map();
