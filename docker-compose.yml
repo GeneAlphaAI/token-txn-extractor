@@ -6,4 +6,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "5015:5015"
-
+    restart: always
+    volumes:
+      - extractor_files:/app/src/output/0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2
+volumes:
+  extractor_files
