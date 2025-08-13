@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const { parse } = require("json2csv");
 const csv = require("csv-parser");
+const readline = require("readline");
 
 class TransactionProcessor {
   static CONCURRENCY_LIMIT = 70;
@@ -492,131 +493,151 @@ class TransactionProcessor {
    * @returns {Promise<{message: string, totalBatches: number, totalProcessed: number}>} - Summary of the dataset generation process.
    * @throws {Error} Throws if date formats are invalid or if fromDate is after toDate.
    */
-async generateWethDataset(tokenAddress, fromDate, toDate) {
-  try {
+  async generateWethDataset(tokenAddress, fromDate, toDate) {
     const pMap = (await import("p-map")).default;
     const fromDateObj = new Date(fromDate);
     const toDateObj = new Date(toDate);
-
-    if (isNaN(fromDateObj.getTime()) || isNaN(toDateObj.getTime())) {
+    if (isNaN(fromDateObj.getTime()) || isNaN(toDateObj.getTime()))
       throw new Error(`Invalid date format.`);
-    }
-    if (fromDateObj > toDateObj) {
+    if (fromDateObj > toDateObj)
       throw new Error(`fromDate cannot be after toDate`);
-    }
 
-    console.log(`Processing historical data for ${tokenAddress} from ${fromDate} to ${toDate}`);
-
-    const hashes = await this.extractTransactionHashes(
-      path.join(__dirname, "../resources/clean_data.csv")
+    console.log(
+      `Processing historical data for ${tokenAddress} from ${fromDate} to ${toDate}`
     );
-
-    if (hashes.length === 0) {
-      console.log("No hashes found.");
-      return [];
-    }
-    console.log(`Found ${hashes.length} unique transactions`);
 
     const outputDir = path.join(__dirname, "..", "output", tokenAddress);
     fs.mkdirSync(outputDir, { recursive: true });
 
+    let batch = [];
     let batchCount = 0;
-    let totalProcessed = 0;
-    const innerChunkSize = 500;
 
-    for (let i = 0; i < hashes.length; i += TransactionProcessor.BATCH_SIZE) {
-      const batch = hashes.slice(i, i + TransactionProcessor.BATCH_SIZE);
+    // Read hashes from file in streaming mode
+    const rl = readline.createInterface({
+      input: fs.createReadStream(
+        path.join(__dirname, "../resources/clean_data.csv")
+      ),
+      crlfDelay: Infinity,
+    });
 
-      const outputFilename = path.join(outputDir, `weth_batch_${batchCount + 1}.csv`);
-      if (fs.existsSync(outputFilename)) {
-        console.log(`⚠️ Skipping batch ${batchCount + 1} (already processed)`);
+    for await (const line of rl) {
+      const hash = line.trim();
+      if (!hash || hash === "hash") continue; // skip header or empty lines
+
+      batch.push(hash);
+
+      if (batch.length >= TransactionProcessor.BATCH_SIZE) {
         batchCount++;
-        continue;
-      }
-
-      console.log(`Processing batch ${batchCount + 1} txs...`);
-      fs.writeFileSync(outputFilename, "hash,timestamp,from,to,value\n");
-
-      for (let j = 0; j < batch.length; j += innerChunkSize) {
-        const chunk = batch.slice(j, j + innerChunkSize);
-
-        let validTxDetails = await pMap(
-          chunk,
-          async (tx) => {
-            try {
-              const txDetails = await identifyNProcessWethTxns(tx, true);
-              if (!txDetails) {
-                console.log(`Skipping ${tx} - missing details`);
-                return null;
-              }
-              totalProcessed++;
-              console.log(`Processed ${tx} - ${txDetails.type || "UNKNOWN"}`);
-              return { ...txDetails, txHash: tx };
-            } catch (error) {
-              console.error(`Failed to process ${tx}: ${error.message}`);
-              return null;
-            }
-          },
-          { concurrency: TransactionProcessor.CONCURRENCY }
+        await this.processBatch(
+          batch,
+          tokenAddress,
+          fromDateObj,
+          toDateObj,
+          pMap,
+          batchCount
         );
-
-        validTxDetails = validTxDetails
-          .filter(Boolean)
-          .sort((a, b) => a.timestamp - b.timestamp);
-
-        if (validTxDetails.length > 0) {
-          let windows = this.createMinuteWindows(
-            validTxDetails,
-            Math.floor(fromDateObj.getTime() / 1000),
-            Math.floor(toDateObj.getTime() / 1000)
-          );
-
-          let windowResults = await Promise.all(
-            windows.map(async ([windowStart, txns]) => {
-              if (txns.length > 0) {
-                return await this.buildMinWindowOfWeth(windowStart, txns);
-              }
-              return null;
-            })
-          );
-
-          let finalResults = windowResults.filter(Boolean).reverse();
-
-          await this.saveDatasetToCSV(finalResults, outputFilename);
-
-          // clear memory aggressively
-          validTxDetails.length = 0;
-          windows.length = 0;
-          windowResults.length = 0;
-          finalResults.length = 0;
-          validTxDetails = null;
-          windows = null;
-          windowResults = null;
-          finalResults = null;
-        }
-
-        chunk.length = 0;
+        batch.length = 0;
         if (global.gc) global.gc();
       }
-
-      batch.length = 0;
-      batchCount++;
-      if (global.gc) global.gc();
     }
 
-    console.log(`🎉 Done. Processed ${totalProcessed} valid transactions across ${batchCount} batches.`);
+    // process leftover batch
+    if (batch.length > 0) {
+      batchCount++;
+      await this.processBatch(
+        batch,
+        tokenAddress,
+        fromDateObj,
+        toDateObj,
+        pMap,
+        batchCount
+      );
+
+      batch.length = 0;
+    }
+
+    if (global.gc) global.gc();
+    console.log(`🎉 Done. Processed ${batchCount} batches.`);
 
     return {
-      message: "WETH dataset generation completed.",
-      totalBatches: batchCount,
-      totalProcessed,
+      message: "WETH dataset generation Started.",
+      success: true,
     };
-  } catch (err) {
-    console.error("Historical processing failed:", err);
-    throw err;
   }
-}
 
+  // Extracted batch processor to keep things clean
+  async processBatch(
+    batch,
+    tokenAddress,
+    fromDateObj,
+    toDateObj,
+    pMap,
+    batchCount
+  ) {
+    console.log(
+      `Processing batch ${batchCount}, number of transactions: ${batch.length}`
+    );
+    const outputFilename = path.join(
+      __dirname,
+      "..",
+      "output",
+      tokenAddress,
+      `weth_batch_${batchCount}.csv`
+    );
+    fs.writeFileSync(outputFilename, "hash,timestamp,from,to,value\n");
+
+    let validTxDetails = await pMap(
+      batch,
+      async (tx) => {
+        try {
+          const txDetails = await identifyNProcessWethTxns(tx, true);
+          if (!txDetails) return null;
+          return { ...txDetails, txHash: tx };
+        } catch (error) {
+          console.error(`Failed to process ${tx}: ${error.message}`);
+          return null;
+        }
+      },
+      { concurrency: TransactionProcessor.CONCURRENCY }
+    );
+
+    validTxDetails = validTxDetails
+      .filter(Boolean)
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    console.log(
+      `Found ${validTxDetails.length} valid transactions in batch ${batchCount}`
+    );
+
+    if (validTxDetails.length > 0) {
+      let windows = this.createMinuteWindows(
+        validTxDetails,
+        Math.floor(fromDateObj.getTime() / 1000),
+        Math.floor(toDateObj.getTime() / 1000)
+      );
+
+      let windowResults = await Promise.all(
+        windows.map(async ([windowStart, txns]) => {
+          if (txns.length > 0)
+            return await this.buildMinWindowOfWeth(windowStart, txns);
+          return null;
+        })
+      );
+
+      let finalResults = windowResults.filter(Boolean).reverse();
+      await this.saveDatasetToCSV(finalResults, outputFilename);
+      console.log(`🎉 Saved ${finalResults.length} minutes of data in batch ${batchCount}`);
+
+      finalResults = null;
+      windowResults = null;
+      windows = null;
+    }
+
+    validTxDetails = null;
+    if (global.gc) global.gc();
+
+    batch.length = null;
+  }
 
   createMinuteWindows(transactions, fromTimestamp, toTimestamp) {
     const minuteMap = new Map();
