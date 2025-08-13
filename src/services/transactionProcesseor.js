@@ -12,14 +12,15 @@ const {
 } = require("./web3Services/wethDataExtractor");
 const fs = require("fs");
 const path = require("path");
-const { parse } = require("json2csv");
+const { createWriteStream } = require('fs');
+const { stringify } = require('csv-stringify');
 const csv = require("csv-parser");
 const readline = require("readline");
 
 class TransactionProcessor {
   static CONCURRENCY_LIMIT = 70;
-  static BATCH_SIZE = 2000;
-  static CONCURRENCY = 10;
+  static BATCH_SIZE = 500;
+  static CONCURRENCY = 5;
 
   constructor() {}
 
@@ -513,7 +514,7 @@ class TransactionProcessor {
     let batchCount = 0;
 
     // Read hashes from file in streaming mode
-    const rl = readline.createInterface({
+    const rl = await readline.createInterface({
       input: fs.createReadStream(
         path.join(__dirname, "../resources/clean_data.csv")
       ),
@@ -584,7 +585,6 @@ class TransactionProcessor {
       tokenAddress,
       `weth_batch_${batchCount}.csv`
     );
-    fs.writeFileSync(outputFilename, "hash,timestamp,from,to,value\n");
 
     let validTxDetails = await pMap(
       batch,
@@ -720,7 +720,8 @@ class TransactionProcessor {
     });
   }
 
-  async saveDatasetToCSV(data, outputPath) {
+ async saveDatasetToCSV(data, outputPath) {
+  return new Promise((resolve, reject) => {
     try {
       const fields = [
         "minStartUTC",
@@ -740,15 +741,53 @@ class TransactionProcessor {
         "btcPrice",
       ];
 
-      const opts = { fields };
-      const csv = parse(data, opts);
+      // Create write stream
+      const outputStream = createWriteStream(outputPath);
+      
+      // Create CSV stringifier with same options as before
+      const stringifier = stringify({
+        header: true,
+        columns: fields,
+        quoted: true, // Maintains the same quoting behavior
+        quoted_empty: true,
+        cast: {
+          // Maintain same number formatting
+          number: (value) => value.toString(),
+        }
+      });
 
-      fs.writeFileSync(outputPath, csv);
+      // Pipe the stringifier to the output file
+      stringifier.pipe(outputStream);
+
+      // Write each data row
+      data.forEach(row => {
+        stringifier.write(row);
+      });
+
+      // Handle errors and completion
+      stringifier.on('error', (err) => {
+        console.error(`CSV stream error: ${err.message}`);
+        reject(err);
+      });
+
+      outputStream.on('error', (err) => {
+        console.error(`File write error: ${err.message}`);
+        reject(err);
+      });
+
+      outputStream.on('finish', () => {
+        resolve();
+      });
+
+      // End the stream
+      stringifier.end();
+
     } catch (err) {
-      console.error(`Failed to save dataset CSV: ${err.message}`);
-      throw err;
+      console.error(`Failed to initialize CSV stream: ${err.message}`);
+      reject(err);
     }
-  }
+  });
+}
 }
 
 module.exports = TransactionProcessor;
