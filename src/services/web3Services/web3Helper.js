@@ -357,7 +357,7 @@ async function getWethPair(poolAddress) {
       quoteToken = token1;
     } else {
       // Bypassing ERC20 <--> ERC20 pair tokens
-      logger.warn(`Pool ${poolAddress} does not contain a quote token.`);
+      // logger.warn(`Pool ${poolAddress} does not contain a quote token.`);
       return { poolAddress, baseToken: null, quoteToken: null };
     }
     return { poolAddress, baseToken, quoteToken };

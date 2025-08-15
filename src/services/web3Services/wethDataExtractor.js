@@ -89,11 +89,7 @@ async function identifyNProcessWethTxns(txHash, historicalTxns = false) {
       receipt.logs[0].topics[0] === Config.TRANSFER_TOPIC &&
       receipt.logs[0].data !== "0x"
     ) {
-      // if (
-      //   receipt.to &&
-      //   Config.BLACK_LISTED_ADDRESSES.includes(receipt.to.toLowerCase())
-      // )
-      return;
+      return null;
     } else if (receipt.logs.length > 1) {
       // get all the swap logs
       const allSwapLogs = receipt.logs.filter(
@@ -113,9 +109,9 @@ async function identifyNProcessWethTxns(txHash, historicalTxns = false) {
           );
         }
       } else {
-        logger.warn(
-          `Multiple pools found in transaction receipt: ${allSwapLogs.length}.`
-        );
+        // logger.warn(
+        //   `Multiple pools found in transaction receipt: ${allSwapLogs.length}.`
+        // );
 
         const swapLogsWithPairs = await Promise.all(
           allSwapLogs.map(async (log) => ({

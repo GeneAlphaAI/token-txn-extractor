@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const asyncMiddleware = require("../middleware/asyncMiddleware");
-const TransactionProcessor = require("../services/transactionProcesseor");
+const TransactionProcessor = require("../services/transactionProcessor");
 const logger = require("../utils/logger");
 const processor = new TransactionProcessor();
 
